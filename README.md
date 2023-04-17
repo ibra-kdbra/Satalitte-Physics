@@ -1,5 +1,5 @@
 
-## Special Commands and GUI : 
+# Special Commands and GUI : 
 - SPACE : Pause state (very important !)
 - Left Click : Select a ball and show information on it
 - Righ Clik : Add velocity ball throught the raycast hit with the START_SPEED specified on right DAT Control panel
