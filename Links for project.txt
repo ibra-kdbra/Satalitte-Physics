@@ -1,0 +1,53 @@
+//Movement and postioning
+---https://earthobservatory.nasa.gov/features/OrbitsCatalog
+
+//forward on satellites
+---https://www.sciencelearn.org.nz/resources/268-gravity-and-satellite-motion
+
+//Velocity and postion
+---https://personal.math.ubc.ca/~cass/courses/m309-01a/hunter/satelliteOrbits.html
+
+//Gravational Force on satellites
+---http://www.thestargarden.co.uk/Newtons-theory-of-gravity.html
+
+//Energy Relations for both orbits
+---https://www.physicsclassroom.com/class/circles/Lesson-4/Energy-Relationships-for-Satellites
+
+//Energy Relations for use
+---https://www.physicsclassroom.com/Class/energy
+
+//Circular Motions for satellites
+---https://www.physicsclassroom.com/class/circles/Lesson-4/Circular-Motion-Principles-for-Satellites
+
+//Air friction on the satellites
+---https://www.doubtnut.com/question-answer-physics/air-friction-increases-the-velocity-of-the-sastellite-explain-11302658
+
+//Schiehallion_experiment
+---https://en.wikipedia.org/wiki/Schiehallion_experiment
+
+//Stardome website for more info
+---https://www.stardome.org.nz/education/resources
+
+//Satellite History
+---http://www.geosats.com/sathist.html
+
+//More explention for satellites
+---https://spark.iop.org/collections/orbits-and-satellites-physics-narratives
+
+//َQuestions Answered
+---https://physics.stackexchange.com/questions/667022/elliptical-orbit-and-circular-motion
+---https://physics.stackexchange.com/questions/102699/what-may-be-effect-of-air-friction-to-the-velocity-of-satellite
+
+/*Vidoes to see to learn more::
+
+--Orbit Types :
+https://www.youtube.com/watch?v=BvjlBpP4zU8
+
+--Cannon mountain example :
+https://galileoandeinstein.phys.virginia.edu/more_stuff/Applets/NewtMtn/home.html
+
+--Identifying centripetal force for cars and satellites :
+https://www.khanacademy.org/science/ap-college-physics-1/xf557a762645cccc5:circular-motion-and-gravitation/xf557a762645cccc5:free-body-diagrams-for-objects-in-uniform-circular-motion/v/identifying-centripetal-force-for-cars-and-satellites
+
+--Ellipse orbit velocity :
+https://www.youtube.com/watch?v=i8-yDyEVWAY
