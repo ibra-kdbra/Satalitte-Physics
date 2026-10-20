@@ -14,6 +14,8 @@ import { OrbitLine } from './render/orbitLine.js';
 import { createLabel } from './render/labels.js';
 import { createLaunchPreview } from './render/launchPreview.js';
 import { createEquatorGrid } from './render/grid.js';
+import { CatalogPoints } from './render/catalogPoints.js';
+import { Catalog } from './catalog/catalog.js';
 import { createHUD } from './ui/hud.js';
 import { CameraRig } from './camera.js';
 import { Input } from './input.js';
@@ -29,6 +31,16 @@ const ORBIT_SEGMENTS = 256;
 const STORAGE_KEY = 'satalitte-physics:v2:settings';
 const ORIGIN = new Vector3();
 const PLANET_IDS = new Set(['earth', 'moon']);
+const CAT = 'cat:';                    // id prefix of real (SGP4) satellites
+const isReal = (id) => typeof id === 'string' && id.startsWith(CAT);
+const realIndex = (id) => Number(id.slice(CAT.length));
+const GROUPS_KEY = 'satalitte-physics:v2:groups';
+// Data colours for real-satellite groups: distinct but muted, so simulated craft stay prominent.
+const GROUP_COLORS = {
+  stations: '#f2c14e', visual: '#d6dbe2', science: '#8ccfb5', weather: '#8fb3d9',
+  gps: '#a6d27a', galileo: '#b9a4e0', geo: '#e2a17c', starlink: '#7c93a6',
+};
+const groupColor = (id) => GROUP_COLORS[id] || '#c0c6cf';
 
 // ------------------------------------------------------------------ settings
 
@@ -93,6 +105,10 @@ const hud = createHUD(document.getElementById('ui'), handlers(), {
 // ------------------------------------------------------------------ boot
 
 let view, earth, moon, sky, grid, rig, input, launchPreview, previewLine, targetRing;
+let catalog, catalogPoints;
+// The selected real satellite: exact SGP4 state each frame, plus its own model, label and orbit.
+const real = { id: null, index: -1, obj: null, state: null, visual: null, anchor: null, label: null, orbit: null };
+const coloredGroups = new Set();
 let moonTrail, moonOrbitLine, moonAnchor, earthAnchor, previewLabel;
 const markerLabels = {};
 
@@ -160,7 +176,19 @@ async function boot() {
     markerLabels[key] = l;
   }
 
+  catalogPoints = new CatalogPoints();
+  catalogPoints.setVisible(true);
+  scene.add(catalogPoints.object);
+  real.orbit = new OrbitLine({ color: 0xd6dbe2, capacity: ORBIT_SEGMENTS });
+  real.orbit.setVisible(false);
+  scene.add(real.orbit.object);
+  real.anchor = new Object3D();
+  scene.add(real.anchor);
+  catalog = new Catalog({ basePath: params.get('satdata') || './data/satellites/', onChange: onCatalogChange });
+  catalog.init().then(restoreCatalogGroups).catch((err) => console.warn('Satellite catalogue:', err));
+
   rig = new CameraRig(camera, view.renderer.domElement);
+  rig.colliders = () => [[ORIGIN, R_EARTH * UNIT], [moonRender, R_MOON * UNIT]];
   input = new Input(view.renderer.domElement, camera, {
     getPickables,
     onPick: (id) => select(id),
@@ -218,6 +246,15 @@ const firstSatelliteId = () => sim.satellites.find((s) => s.alive)?.id ?? null;
 function bodyFocus(id) {
   if (id === 'earth') return { kind: 'planet', radius: R_EARTH * UNIT, getPosition: (out) => out.set(0, 0, 0) };
   if (id === 'moon') return { kind: 'moon', radius: R_MOON * UNIT, getPosition: (out) => toRender(sim.moonPos, out) };
+  if (isReal(id)) {
+    if (real.id !== id) return null;
+    return {
+      kind: 'satellite', radius: 0.001,
+      getPosition: (out) => (real.state ? toRender(real.state.pos, out) : out),
+      getVelocity: (out) => (real.state ? toVec3(real.state.vel, out) : out.set(0, 0, 1)),
+      getCentral: (out) => out.set(0, 0, 0),
+    };
+  }
   const e = entities.get(id);
   if (!e) return null;
   return {
@@ -238,6 +275,15 @@ function getPickables() {
   ];
   for (const e of entities.values()) {
     if (e.sat.alive) list.push({ id: e.sat.id, kind: e.sat.kind, radius: 0, position: toRender(e.sat.pos) });
+  }
+  // Real satellites, from the positions just drawn (only built on a click).
+  if (catalogPoints?.object.visible) {
+    const pos = catalogPoints.positions;
+    const n = catalogPoints.geometry.drawRange.count;
+    for (let i = 0; i < n; i++) {
+      const x = pos[i * 3];
+      if (x === x) list.push({ id: `${CAT}${i}`, kind: 'real', radius: 0, position: new Vector3(x, pos[i * 3 + 1], pos[i * 3 + 2]) });
+    }
   }
   return list;
 }
@@ -294,10 +340,12 @@ function launchPreset(presetId, { quiet = false, select: doSelect = true } = {})
 // ------------------------------------------------------------------ selection & camera
 
 function select(id) {
-  if (id && !PLANET_IDS.has(id) && !entities.has(id)) id = null;
+  if (isReal(id) && !catalog?.objects[realIndex(id)]) id = null;
+  if (id && !isReal(id) && !PLANET_IDS.has(id) && !entities.has(id)) id = null;
   if (selectedId === id) return;
-  if (selectedId && !PLANET_IDS.has(selectedId)) sim.setThrust(selectedId, []);
+  if (selectedId && !PLANET_IDS.has(selectedId) && !isReal(selectedId)) sim.setThrust(selectedId, []);
   selectedId = id;
+  setRealSelection(isReal(id) ? id : null);
   uiThrust.clear();
   input?.held.clear(); // a key held for the old craft must not fire the new one
   hud.setSelection?.(id);
@@ -311,6 +359,7 @@ function select(id) {
 }
 
 function focusOn(id) {
+  if (isReal(id)) select(id); // a real satellite's camera focus exists once it is selected
   const f = bodyFocus(id);
   if (!f) return;
   select(id);
@@ -321,7 +370,7 @@ function focusOn(id) {
 function setCameraMode(mode) {
   if (mode !== 'orbit') {
     const sat = selectedId && entities.get(selectedId)?.sat;
-    if (!sat?.alive) {
+    if (!sat?.alive && !(isReal(selectedId) && real.state)) {
       hud.toast?.('Select a flying spacecraft first to use the chase or nadir camera.', 'warn');
       hud.setCameraMode?.(rig.mode);
       return;
@@ -469,6 +518,7 @@ function frame(now) {
   moon.update({ position: moonRender, sunDir, earthPosition: ORIGIN });
   moonAnchor.position.copy(moonRender).add(tmp.set(0, R_MOON * UNIT * 1.6, 0));
   pushTrail(moonTrail, moonRender, null);
+  updateCatalog();
 
   rig.update(dt);
 
@@ -490,6 +540,7 @@ function frame(now) {
   }
   updateMoonOrbit();
   updateSelectionOverlays();
+  updateRealVisual();
 
   for (let i = flashes.length - 1; i >= 0; i--) {
     if (!flashes[i].update(dt)) { flashes[i].dispose?.(); flashes.splice(i, 1); }
@@ -526,6 +577,7 @@ function hideOccludedLabels() {
     e.label.visible = vis && !riding && !occluded(e.anchor.position);
   }
   for (const l of Object.values(markerLabels)) if (l.visible && occluded(l.position)) l.visible = false;
+  if (real.label) real.label.visible = vis && !!real.state && !(rig.mode !== 'orbit') && !occluded(real.anchor.position);
 }
 
 /** Add a trail point once the object has moved far enough (keeps trails smooth at any warp). */
@@ -627,6 +679,110 @@ function updateSelectionOverlays() {
   }
 }
 
+// ------------------------------------------------------------------ real satellites
+
+/** Propagate the catalogue (worker) and upload the point positions; exact state for the selection. */
+function updateCatalog() {
+  if (!catalog) return;
+  const rate = paused ? 0 : WARP_STEPS[warpIndex];
+  catalog.update(sim.dateMs, rate);
+  const n = catalog.positionsAt(sim.dateMs, catalogPoints.positions, UNIT);
+  catalogPoints.commit(n);
+  if (real.id) {
+    real.state = catalog.stateOf(real.index, sim.dateMs);
+    catalogPoints.setHighlight(real.index);
+  } else {
+    catalogPoints.setHighlight(-1);
+  }
+}
+
+function setRealSelection(id) {
+  if (real.id === id) return;
+  if (real.visual) { view.scene.remove(real.visual.object); real.visual.dispose?.(); real.visual = null; }
+  if (real.label) { real.anchor.remove(real.label); real.label = null; }
+  real.orbit?.setVisible(false);
+  real.id = id; real.index = id ? realIndex(id) : -1; real.obj = id ? catalog.objects[real.index] : null; real.state = null;
+  if (!real.obj) { real.id = null; return; }
+  const color = groupColor(real.obj.group);
+  real.visual = createSatelliteVisual({ color: parseInt(color.slice(1), 16), kind: 'satellite' });
+  view.scene.add(real.visual.object);
+  real.label = createLabel(real.obj.name, color);
+  real.label.element.classList.add('selected');
+  real.anchor.add(real.label);
+  real.orbit.setColor(parseInt(color.slice(1), 16));
+  real.state = catalog.stateOf(real.index, sim.dateMs);
+}
+
+function updateRealVisual() {
+  if (!real.id || !real.visual) return;
+  if (!real.state) { real.visual.object.visible = false; real.orbit.setVisible(false); return; }
+  const p = toRender(real.state.pos, tmp);
+  const riding = rig.mode !== 'orbit';
+  real.visual.object.visible = true;
+  real.visual.update({ position: p, velocityDir: toVec3(real.state.vel, tmp2).normalize(), camera: view.camera, heating: 0, selected: !riding, sunDir, thrustDir: null, viewportHeight: window.innerHeight });
+  real.anchor.position.copy(p);
+  if (settings.graphics.orbits) {
+    const el = elementsFromState(real.state.pos, real.state.vel, MU_EARTH);
+    const { count, closed } = sampleConic(el, orbitBuf, ORBIT_SEGMENTS, UNIT, [0, 0, 0], ESCAPE_DISTANCE);
+    real.orbit.setPoints(orbitBuf, count, closed);
+    real.orbit.setVisible(true);
+  } else {
+    real.orbit.setVisible(false);
+  }
+}
+
+function realTelemetry() {
+  if (!real.obj || !real.state) return null;
+  const g = catalog.groups.get(real.obj.group);
+  return sim.stateTelemetry({
+    id: real.id, name: real.obj.name, kind: 'real', color: groupColor(real.obj.group), pos: real.state.pos, vel: real.state.vel,
+    extra: {
+      norad: real.obj.norad, intl: real.obj.intl, group: real.obj.group, groupName: g?.name || real.obj.group,
+      elementAgeS: (sim.dateMs - real.obj.epochMs) / 1000,
+    },
+  });
+}
+
+function onCatalogChange() {
+  if (!catalog) return;
+  for (const g of catalog.groups.values()) {
+    if (g.loaded && !coloredGroups.has(g.id)) {
+      catalogPoints.setGroupColor(g.start, g.count, groupColor(g.id));
+      coloredGroups.add(g.id);
+    }
+  }
+  // Deselect a real satellite whose group was hidden.
+  if (isReal(selectedId) && !catalog.groups.get(real.obj?.group)?.visible) select(null);
+  hud.setCatalog?.({
+    groups: [...catalog.groups.values()].map((g) => ({
+      id: g.id, name: g.name, count: g.count ?? null, visible: g.visible, loading: g.loading, error: g.error, color: groupColor(g.id),
+    })),
+    updated: catalog.updated, source: catalog.manifest?.source || 'CelesTrak',
+  });
+  // ?norad=25544 selects that satellite once its group is loaded.
+  const norad = Number(params.get('norad'));
+  if (norad && !restoredNorad) {
+    const o = catalog.objects.find((x) => x.norad === norad);
+    if (o) { restoredNorad = true; focusOn(`${CAT}${o.index}`); }
+  }
+}
+let restoredNorad = false;
+
+async function restoreCatalogGroups() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(GROUPS_KEY) || 'null'); } catch { /* ignore */ }
+  if (!Array.isArray(saved)) return;
+  for (const g of catalog.groups.values()) {
+    const want = saved.includes(g.id);
+    if (want !== g.visible) await catalog.setVisible(g.id, want);
+  }
+}
+
+function saveCatalogGroups() {
+  const on = [...catalog.groups.values()].filter((g) => g.visible).map((g) => g.id);
+  try { localStorage.setItem(GROUPS_KEY, JSON.stringify(on)); } catch { /* ignore */ }
+}
+
 // ------------------------------------------------------------------ HUD sync
 
 let lastBodiesKey = '';
@@ -646,7 +802,7 @@ function refreshBodies(force = false) {
 function updateHud(force = false) {
   hud.setTime?.({ date: sim.date, warpIndex, paused, warpLimited });
   refreshBodies();
-  const t = selectedId ? sim.telemetry(selectedId) : null;
+  const t = isReal(selectedId) ? realTelemetry() : selectedId ? sim.telemetry(selectedId) : null;
   hud.setTelemetry?.(t);
   if (t && !PLANET_IDS.has(selectedId)) {
     hud.setDeltaVUsed?.(t.deltaVUsedMs);
@@ -743,7 +899,7 @@ function resetSimulation() {
 }
 
 function deleteObject(id) {
-  if (!id || PLANET_IDS.has(id)) return;
+  if (!id || PLANET_IDS.has(id) || isReal(id)) return; // real satellites are data, not ours to delete
   const name = entities.get(id)?.sat.name;
   if (selectedId === id) { select(null); if (rig.focus && rig.mode !== 'orbit') setCameraMode('orbit'); rig.setFocus(bodyFocus('earth')); }
   sim.remove(id);
@@ -843,6 +999,28 @@ function handlers() {
       refreshBodies();
     },
     onResetView: () => resetView(),
+    onCatalogToggle: async (groupId, on) => {
+      if (!catalog) return;
+      await catalog.setVisible(groupId, on);
+      saveCatalogGroups();
+    },
+    onCatalogSearch: (query) => {
+      const results = (catalog?.search(query, 12) || []).map((o) => ({
+        id: `${CAT}${o.index}`, name: o.name, norad: o.norad, group: o.group,
+        groupName: catalog.groups.get(o.group)?.name || o.group,
+      }));
+      hud.setSearchResults?.(query, results);
+    },
+    onCloneReal: (id) => {
+      if (!isReal(id)) return;
+      const obj = catalog.objects[realIndex(id)];
+      const state = obj && catalog.stateOf(realIndex(id), sim.dateMs);
+      if (!state) { hud.toast?.('This satellite has no valid position right now.', 'warn'); return; }
+      const sat = launchSpec({ name: `${obj.name} (sim)`, color: nextColor(), kind: 'satellite', pos: state.pos, vel: state.vel });
+      refreshBodies();
+      focusOn(sat.id);
+      hud.toast?.(`${obj.name} cloned into the simulation: you can fly it now.`, 'success');
+    },
   };
 }
 

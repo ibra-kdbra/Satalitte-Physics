@@ -62,6 +62,8 @@ export class Catalog {
       const res = await fetch(`${this.basePath}index.json`, { cache: 'no-cache' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       this.manifest = await res.json();
+      // The placeholder shipped before the first data refresh means "ask CelesTrak live".
+      if (!this.manifest.groups?.length) throw new Error('no shipped data');
       for (const g of this.manifest.groups) {
         this.groups.set(g.id, { ...g, loaded: false, loading: false, visible: false, start: 0, error: null });
       }

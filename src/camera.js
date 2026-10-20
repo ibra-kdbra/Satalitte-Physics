@@ -27,6 +27,7 @@ export class CameraRig {
     c.maxDistance = 8000;
 
     this.mode = 'orbit';
+    this.colliders = () => []; // [[centerVector3, radius], …] supplied by the app
     this.focus = null;          // { getPosition(out), radius, kind, getVelocity?(out), getCentral?(out) }
     this.lastFocusPos = new Vector3();
     this.fly = null;            // active fly-to animation
@@ -49,10 +50,18 @@ export class CameraRig {
     const minD = focus.kind === 'planet' || focus.kind === 'moon' ? focus.radius * 1.12 : 0.0003;
     this.controls.minDistance = minD;
     const d1 = distance ?? CameraRig.viewDistance(focus.radius, focus.kind);
+    const fromDir = this._dir.subVectors(this.camera.position, this.controls.target).normalize().clone();
+    // Spacecraft are approached from above (away from the body they orbit), so
+    // the planet fills the background instead of blocking the view.
+    let toDir = null;
+    if (focus.kind !== 'planet' && focus.kind !== 'moon') {
+      const central = focus.getCentral ? focus.getCentral(this._c) : this._c.set(0, 0, 0);
+      const radial = this._goal.subVectors(this._p, central).normalize();
+      toDir = radial.multiplyScalar(0.8).addScaledVector(fromDir, 0.45).normalize().clone();
+    }
     if (instant) {
-      this._dir.subVectors(this.camera.position, this.controls.target).normalize();
       this.controls.target.copy(this._p);
-      this.camera.position.copy(this._p).addScaledVector(this._dir, d1);
+      this.camera.position.copy(this._p).addScaledVector(toDir || fromDir, d1);
       this.fly = null;
     } else {
       this.fly = {
@@ -60,6 +69,7 @@ export class CameraRig {
         fromTarget: this.controls.target.clone(),
         fromDist: Math.max(this.camera.position.distanceTo(this.controls.target), 1e-3),
         toDist: d1,
+        ...(toDir ? { fromDir, toDir } : {}),
       };
     }
     this.lastFocusPos.copy(this._p);
@@ -126,6 +136,20 @@ export class CameraRig {
       this.controls.target.copy(pos);
     }
     this.controls.update(dt);
+    this._keepOutside();
+  }
+
+  /** Never let the camera sink into a planet (zooming, flights, or a moving target). */
+  _keepOutside() {
+    for (const [center, radius] of this.colliders()) {
+      const d = this.camera.position.distanceTo(center);
+      const min = radius * 1.004;
+      if (d < min) {
+        this._v.subVectors(this.camera.position, center);
+        if (this._v.lengthSq() < 1e-12) this._v.set(0, 1, 0);
+        this.camera.position.copy(center).addScaledVector(this._v.normalize(), min);
+      }
+    }
   }
 
   /** Ease the camera offset toward `goal`: direction linearly, distance in log space (any range feels the same). */

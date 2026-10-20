@@ -47,10 +47,16 @@ const TYPES = {
   '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.txt': 'text/plain',
 };
+// Real-satellite data: serve the synthetic offline fixtures at the production
+// path (CelesTrak is not reachable from CI sandboxes), generating them if needed.
+const FIXTURES = join(ROOT, 'tests/fixtures/satellites');
+if (!existsSync(join(FIXTURES, 'index.json'))) execSync('node tests/fixtures/make-satellites.mjs 2000', { cwd: ROOT, stdio: 'ignore' });
+
 const server = createServer(async (req, res) => {
   const url = decodeURIComponent(req.url.split('?')[0]);
   if (!url.startsWith(BASE)) { res.writeHead(404); return res.end('outside base'); }
-  let p = normalize(join(ROOT, url.slice(BASE.length)));
+  const rel = url.slice(BASE.length);
+  let p = rel.startsWith('data/satellites/') ? normalize(join(FIXTURES, rel.slice('data/satellites/'.length))) : normalize(join(ROOT, rel));
   if (p.endsWith('/')) p = join(p, 'index.html');
   if (!p.startsWith(ROOT) || !existsSync(p)) { res.writeHead(404); return res.end('404'); }
   res.writeHead(200, { 'content-type': TYPES[extname(p)] || 'application/octet-stream' });

@@ -1,0 +1,5 @@
+{
+  "source": "CelesTrak GP data (https://celestrak.org), refreshed by .github/workflows/satellites.yml",
+  "updated": null,
+  "groups": []
+}

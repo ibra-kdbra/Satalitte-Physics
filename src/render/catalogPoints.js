@@ -3,7 +3,7 @@
 // the Earth by the depth test. NaN positions (hidden or decayed objects) are
 // discarded in the vertex shader.
 
-import { BufferAttribute, BufferGeometry, Color, DynamicDrawUsage, Points, ShaderMaterial } from 'three';
+import { BufferAttribute, BufferGeometry, Color, DynamicDrawUsage, Points, ShaderMaterial, Sphere, Vector3 } from 'three';
 
 const vertexShader = /* glsl */ `
 #include <common>
@@ -63,6 +63,9 @@ export class CatalogPoints {
     this.geometry.setAttribute('position', this.posAttr);
     this.geometry.setAttribute('color', this.colorAttr);
     this.geometry.setDrawRange(0, 0);
+    // Fixed bounds (render units, ~2 million km): positions contain NaN for hidden
+    // objects, so three.js must never compute the sphere from them (used for sorting).
+    this.geometry.boundingSphere = new Sphere(new Vector3(), 2000);
     this.material = new ShaderMaterial({
       uniforms: {
         size: { value: 4.5 },
