@@ -1,11 +1,16 @@
-// SATALITTE // ORBITAL-OS: HUD. Renders plain data and reports user intent via handlers.
-// Contract: docs/ARCHITECTURE.md → "UI module contract" (+ the ORBITAL-OS amendments:
+// Satalitte Physics: HUD. Renders plain data and reports user intent via handlers.
+// Contract: docs/ARCHITECTURE.md → "UI module contract" (+ ORBITAL-OS amendments:
 // hold-to-burn thrusters, autopilot, instruments, alert banner).
 //
 //   const hud = createHUD(document.getElementById('ui'), handlers, { settings, presets, warpSteps });
 //
-// Hot paths (setTime / setTelemetry ~10 Hz, pushHistory) only write Text nodes whose
-// string changed and toggle classes on state changes; canvases redraw only on new data.
+// Layout follows progressive disclosure: the default screen shows the clock,
+// the object list, one card for the selection and the launch list. Orbital
+// elements, environment and instruments sit behind "Details"; the flight deck
+// appears only while a spacecraft is selected; settings live in a popover.
+//
+// Hot paths (setTime / setTelemetry ~10 Hz, pushHistory) only write Text nodes
+// whose string changed; canvases redraw only on new data.
 import { h, textSlot, setAttr, toggleClass, call, isTyping, prefersReducedMotion } from './dom.js';
 import { icons } from './icons.js';
 import {
@@ -26,6 +31,10 @@ const DEFAULT_WARP_STEPS = [1, 10, 60, 600, 3600, 21600, 86400];
 const MAX_TOASTS = 4;
 const TRACK_POINTS = 240;
 const CHART_POINTS = 90;
+const BODY = {
+  Earth: { mu: 398600.4418, r: 6371 },
+  Moon: { mu: 4902.800066, r: 1737.4 },
+};
 
 const STATUS_LABEL = { orbiting: 'Orbiting', suborbital: 'Suborbital', escaping: 'Escaping', impacted: 'Impacted' };
 const KIND_LABEL = { satellite: 'Satellite', probe: 'Probe', debris: 'Debris', planet: 'Planet', moon: 'Moon', star: 'Star' };
@@ -33,17 +42,17 @@ const kindLabel = (k) => KIND_LABEL[k] || (k ? k[0].toUpperCase() + k.slice(1) :
 
 // Thruster pad, in the prototype's layout: row 1 = W Q A, row 2 = S E D.
 const THRUSTERS = [
-  ['prograde', 'PROGRADE', 'W', '+V', 'Speed up along the velocity: raises the far side of the orbit'],
-  ['radialOut', 'RADIAL OUT', 'Q', '+R', 'Push away from the planet: rotates the orbit'],
-  ['normal', 'NORMAL +', 'A', '+N', 'Push out of the orbit plane: changes inclination'],
-  ['retrograde', 'RETROGRADE', 'S', '−V', 'Slow down: lowers the far side of the orbit'],
-  ['radialIn', 'RADIAL IN', 'E', '−R', 'Push toward the planet: rotates the orbit'],
-  ['antinormal', 'NORMAL −', 'D', '−N', 'Push the other way out of the orbit plane'],
+  ['prograde', 'Prograde', 'W', 'Push along the direction of travel: raises the far side of the orbit'],
+  ['radialOut', 'Radial out', 'Q', 'Push away from the planet: rotates the orbit around the planet'],
+  ['normal', 'Normal', 'A', 'Push out of the orbit plane: tilts the orbit (changes inclination)'],
+  ['retrograde', 'Retrograde', 'S', 'Push against the direction of travel: lowers the far side of the orbit'],
+  ['radialIn', 'Radial in', 'E', 'Push toward the planet: rotates the orbit around the planet'],
+  ['antinormal', 'Anti-normal', 'D', 'Push out of the orbit plane the other way: tilts the orbit'],
 ];
 const CAMERA_MODES = [
-  ['orbit', 'SAT', 'Follow the selected object (orbit camera)'],
-  ['chase', 'CHASE', 'LVLH prograde chase camera'],
-  ['nadir', 'NADIR', 'Look straight down at the surface below the spacecraft'],
+  ['orbit', 'Follow', 'Orbit camera that follows the selected object'],
+  ['chase', 'Chase', 'Camera behind the spacecraft, looking along its direction of travel'],
+  ['nadir', 'Nadir', 'Look straight down at the ground below the spacecraft'],
 ];
 
 const store = {
@@ -55,25 +64,48 @@ const store = {
   },
 };
 
-/** Orbit-health classification shown on the state card and in the status pill. */
+/** Orbit-health classification: plain-language status for the selection card. */
 export function orbitHealth(t) {
   if (!t) return null;
   const body = t.centralBody === 'Moon' ? 'the Moon' : 'Earth';
-  if (t.status === 'impacted') return { kind: 'impacted', pill: 'LOSS OF SIGNAL', label: 'Impacted', detail: `Hit the surface of ${body}` };
+  if (t.status === 'impacted') return { kind: 'impacted', label: 'Impacted', detail: `It hit the surface of ${body}. Launch a new one or clear debris.` };
   if (t.status === 'escaping' || t.apoapsisKm === Infinity || t.periodS === Infinity) {
-    return { kind: 'escape', pill: 'ESCAPE', label: 'Escape trajectory', detail: `Unbound: leaving ${body}` };
+    return { kind: 'escape', label: 'Escape trajectory', detail: `Fast enough to leave ${body} for good: it will not come back.` };
   }
   if (t.status === 'suborbital' || (Number.isFinite(t.periapsisKm) && t.periapsisKm < 0)) {
-    return { kind: 'danger', pill: 'SUBORBITAL', label: 'Suborbital, will impact', detail: 'Periapsis is below the surface' };
+    return { kind: 'danger', label: 'Suborbital, will impact', detail: 'The lowest point of its path is below the surface. Burn prograde to save it.' };
   }
-  if ((t.heating || 0) > 0.05) return { kind: 'danger', pill: 'RE-ENTRY', label: 'Re-entry', detail: 'Heating up in the atmosphere' };
-  if ((t.dragAccel || 0) > 5e-6 || (t.centralBody !== 'Moon' && Number.isFinite(t.periapsisKm) && t.periapsisKm < 180)) {
-    return { kind: 'warn', pill: 'DECAYING', label: 'Decaying: drag', detail: 'Air drag is slowly lowering the orbit' };
+  if ((t.heating || 0) > 0.05) return { kind: 'danger', label: 'Re-entering', detail: 'It is heating up in the atmosphere.' };
+  if ((t.dragAccel || 0) > 1e-7 || (t.centralBody !== 'Moon' && Number.isFinite(t.periapsisKm) && t.periapsisKm < 180)) {
+    return { kind: 'warn', label: 'Decaying orbit', detail: 'Air drag is slowly lowering it. Raise the periapsis to stay up longer.' };
   }
-  return { kind: 'ok', pill: 'NOMINAL ORBIT', label: 'Stable orbit', detail: 'Bound orbit clear of the atmosphere' };
+  return { kind: 'ok', label: 'Stable orbit', detail: 'A closed orbit clear of the atmosphere.' };
 }
 
-/** Split "408.3 km" → ["408.3", "km"]; "1.52 million km" → ["1.52", "million km"]. */
+/** Δv estimates for the autopilot buttons (two-body, impulsive). Null when not applicable. */
+export function autopilotEstimates(t, targetAltKm) {
+  const b = BODY[t?.centralBody] || null;
+  if (!b || !Number.isFinite(t.altitudeKm) || !Number.isFinite(t.speedKms)) return null;
+  const r1 = b.r + t.altitudeKm;
+  const v = t.speedKms;
+  const g = ((Number.isFinite(t.flightPathAngleDeg) ? t.flightPathAngleDeg : 0) * Math.PI) / 180;
+  const vh = v * Math.cos(g);
+  const vr = v * Math.sin(g);
+  const vc = Math.sqrt(b.mu / r1);
+  const circ = Math.hypot(vc - vh, vr) * 1000;
+  let hohmann = null;
+  if (t.centralBody === 'Earth' && Number.isFinite(targetAltKm)) {
+    const r2 = b.r + targetAltKm;
+    const a = (r1 + r2) / 2;
+    const vt1 = Math.sqrt(b.mu * (2 / r1 - 1 / a));
+    const vt2 = Math.sqrt(b.mu * (2 / r2 - 1 / a));
+    const dv1 = Math.hypot(vt1 - vh, vr);
+    const dv2 = Math.abs(Math.sqrt(b.mu / r2) - vt2);
+    hohmann = { dv: (dv1 + dv2) * 1000, timeS: Math.PI * Math.sqrt((a * a * a) / b.mu) };
+  }
+  return { circ, hohmann };
+}
+
 const splitUnit = (s) => {
   const i = s.indexOf(' ');
   return i < 0 ? [s, ''] : [s.slice(0, i), s.slice(i + 1)];
@@ -88,76 +120,72 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   const state = {
     warpIndex: 0,
     selectedId: null,
-    telemetryId: undefined,
     cameraMode: 'orbit',
     bodies: new Map(),
-    canFly: null, // forces the first applySelection() to sync the deck
-    pointerBurns: new Set(), // directions held via the pad (pointer / keyboard on the button)
-    mainBurns: new Set(), // directions main reports as firing (setThrusting)
+    canFly: null, // null forces the first applySelection() to sync the deck
+    pointerBurns: new Set(),
+    mainBurns: new Set(),
+    lastTelemetry: null,
+    targetAlt: 850,
   };
 
   // ================================================================ top bar
   const leftToggle = h('button', {
     class: 'icon-btn drawer-toggle', type: 'button', 'aria-controls': 'hud-left', 'aria-expanded': 'false',
-    'aria-label': 'Objects and telemetry panel', title: 'Objects & telemetry', html: icons.list,
+    'aria-label': 'Objects and selection', title: 'Objects and selection', html: icons.list,
   });
   const rightToggle = h('button', {
     class: 'icon-btn drawer-toggle', type: 'button', 'aria-controls': 'hud-right', 'aria-expanded': 'false',
-    'aria-label': 'Launch, instruments and settings panel', title: 'Launch & instruments', html: icons.rocket,
+    'aria-label': 'Launch', title: 'Launch', html: icons.rocket,
   });
-  const helpBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Help and about (?)', title: 'Help (?)', 'aria-haspopup': 'dialog', html: icons.help });
-
-  const pillSlot = textSlot('STANDBY');
-  const statusPill = h('span', { class: 'status-pill', 'data-kind': 'none', title: 'Status of the selected object' }, pillSlot.node);
+  const helpBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Help (?)', title: 'Help (?)', 'aria-haspopup': 'dialog', html: icons.help });
+  const gearBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Settings', title: 'Settings', 'aria-expanded': 'false', 'aria-controls': 'hud-settings', html: icons.sliders });
 
   const dateSlot = textSlot('');
   const timeSlot = textSlot('');
-  const metSlot = textSlot(fmtMET(NaN));
   const warpMultSlot = textSlot('');
   const warpRateSlot = textSlot('');
   const playBtn = h('button', { class: 'btn btn--icon play', type: 'button', 'aria-label': 'Pause simulation', title: 'Pause (Space)', 'aria-pressed': 'false', html: icons.pause });
   const warpDown = h('button', { class: 'btn btn--icon', type: 'button', 'aria-label': 'Slower time warp', title: 'Slower (,)', html: icons.minus });
   const warpUp = h('button', { class: 'btn btn--icon', type: 'button', 'aria-label': 'Faster time warp', title: 'Faster (.)', html: icons.plus });
   const warpLabel = h('span', { class: 'warp__label' },
-    h('strong', { class: 'warp__mult' }, warpMultSlot.node),
+    h('span', { class: 'warp__mult num' }, warpMultSlot.node),
     h('span', { class: 'warp__rate' }, warpRateSlot.node));
-  const limitedChip = h('span', { class: 'limited', hidden: true, title: 'Time warp was reduced automatically to keep the integration accurate' },
-    h('span', { html: icons.warning }), h('span', { class: 'limited__text', text: 'WARP LIMITED' }));
+  const limitedChip = h('span', { class: 'limited', hidden: true, title: 'Time warp was reduced automatically to keep the simulation accurate' },
+    h('span', { html: icons.warning }), h('span', { class: 'limited__text', text: 'Warp limited' }));
+  const pausedTag = h('span', { class: 'paused-tag', text: 'Paused', hidden: true });
 
   const timegroup = h('div', { class: 'timegroup', role: 'group', 'aria-label': 'Simulation time' },
-    h('div', { class: 'met-box', title: 'Simulation clock (UTC)' },
-      h('span', { class: 'met-label', text: 'UTC' }),
-      h('time', { class: 'met-val met-val--clock' },
-        h('span', { class: 'clock__date' }, dateSlot.node), ' ', h('span', { class: 'clock__time' }, timeSlot.node))),
-    h('div', { class: 'met-box met-box--met', title: 'Mission elapsed time of the selected object' },
-      h('span', { class: 'met-label', text: 'MET' }),
-      h('span', { class: 'met-val' }, metSlot.node)),
+    h('time', { class: 'clock num', title: 'Simulation time (UTC)' },
+      h('span', { class: 'clock__date' }, dateSlot.node),
+      h('span', { class: 'clock__time' }, timeSlot.node),
+      h('span', { class: 'clock__utc', text: 'UTC' })),
+    pausedTag,
     h('div', { class: 'warp', role: 'group', 'aria-label': 'Time warp' }, playBtn, warpDown, warpLabel, warpUp),
     limitedChip);
 
   const camBtns = {};
-  const camgroup = h('div', { class: 'camgroup', role: 'group', 'aria-label': 'Camera mode' },
-    h('span', { class: 'camgroup__label', text: 'CAM' }),
+  const camgroup = h('div', { class: 'seg camgroup', role: 'group', 'aria-label': 'Camera' },
     ...CAMERA_MODES.map(([mode, label, tip]) => {
-      camBtns[mode] = h('button', { class: 'btn', type: 'button', 'aria-pressed': mode === 'orbit' ? 'true' : 'false', title: `${tip} (C)`, text: label });
+      camBtns[mode] = h('button', { class: 'seg__btn', type: 'button', 'aria-pressed': mode === 'orbit' ? 'true' : 'false', title: `${tip} (C)`, text: label });
       return camBtns[mode];
     }),
-    h('button', { class: 'btn', type: 'button', title: 'Earth-centred inertial view: reset the camera to Earth (H)', text: 'ECI', dataset: { cam: 'eci' } }));
-  const camHome = h('div', { class: 'camhome' }, camgroup);
+    h('button', { class: 'seg__btn', type: 'button', title: 'Reset the camera to an Earth-centred view (H)', text: 'Earth', dataset: { cam: 'eci' } }));
 
   const topbar = h('header', { class: 'topbar' },
     h('div', { class: 'topbar__start' },
       leftToggle,
-      h('a', { class: 'brand', href: './', 'aria-label': 'Satalitte Physics, Orbital OS' },
-        h('span', { class: 'brand-dot', 'aria-hidden': 'true' }),
-        h('span', { class: 'brand-title' }, 'SATALITTE', h('span', { class: 'brand-title__os', text: ' // ORBITAL-OS' }))),
-      statusPill),
+      h('a', { class: 'brand', href: './', 'aria-label': 'Satalitte Physics' },
+        h('span', { class: 'brand__logo', html: icons.logo }),
+        h('span', { class: 'brand__name' }, 'Satalitte', h('span', { class: 'brand__sub', text: ' Physics' })))),
     timegroup,
-    camHome,
     h('div', { class: 'topbar__end' },
+      camgroup,
+      h('span', { class: 'topbar__sep', 'aria-hidden': 'true' }),
       helpBtn,
-      h('a', { class: 'icon-btn hide-narrow', href: REPO_URL, target: '_blank', rel: 'noopener noreferrer', 'aria-label': 'Source code on GitHub (opens in a new tab)', title: 'GitHub', html: icons.github }),
-      h('a', { class: 'btn btn--ghost hide-narrow', href: LEGACY_URL, title: 'The original 2021 version', html: `${icons.classic}<span class="hide-md">CLASSIC</span>` }),
+      gearBtn,
+      h('a', { class: 'icon-btn hide-narrow', href: REPO_URL, target: '_blank', rel: 'noopener noreferrer', 'aria-label': 'Source code on GitHub (opens in a new tab)', title: 'Source on GitHub', html: icons.github }),
+      h('a', { class: 'icon-btn hide-narrow', href: LEGACY_URL, 'aria-label': 'Classic 2021 version', title: 'Classic 2021 version', html: icons.classic }),
       rightToggle),
   );
 
@@ -168,158 +196,203 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   const srAlert = h('div', { class: 'sr-only', role: 'status', 'aria-live': 'assertive' });
 
   // ========================================================== panel builder
-  const collapsed = store.get('collapsed', { settings: true });
-  function panel(key, title, { badge = null, className = '' } = {}) {
+  const collapsed = store.get('collapsed', {});
+  function panel(key, title, { meta = null, className = '', collapsible = true } = {}) {
     const bodyId = `panel-${key}`;
     const body = h('div', { class: 'panel__body', id: bodyId });
-    const toggle = h('button', { class: 'panel__toggle', type: 'button', 'aria-expanded': 'true', 'aria-controls': bodyId },
-      h('span', { class: 'panel__chev', html: icons.chevron }),
-      h('span', { class: 'panel__title', text: title }));
-    const head = h('div', { class: 'panel-header' }, h('h2', { class: 'panel__h' }, toggle), badge);
+    const titleEl = collapsible
+      ? h('button', { class: 'panel__toggle', type: 'button', 'aria-expanded': 'true', 'aria-controls': bodyId },
+        h('span', { class: 'panel__title', text: title }),
+        h('span', { class: 'panel__chev', html: icons.chevron }))
+      : h('span', { class: 'panel__title', text: title });
+    const head = h('div', { class: 'panel__head' }, h('h2', { class: 'panel__h' }, titleEl), meta);
     const el = h('section', { class: `panel ${className}`, 'data-panel': key, 'aria-label': title }, head, body);
-    const apply = (isCollapsed) => {
-      toggle.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
-      body.hidden = isCollapsed;
-      el.classList.toggle('is-collapsed', isCollapsed);
-    };
-    apply(!!collapsed[key]);
-    toggle.addEventListener('click', () => {
-      const next = toggle.getAttribute('aria-expanded') === 'true';
-      apply(next);
-      collapsed[key] = next;
-      store.set('collapsed', collapsed);
-    });
+    if (collapsible) {
+      const apply = (isCollapsed) => {
+        titleEl.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+        body.hidden = isCollapsed;
+        el.classList.toggle('is-collapsed', isCollapsed);
+      };
+      apply(!!collapsed[key]);
+      titleEl.addEventListener('click', () => {
+        const next = titleEl.getAttribute('aria-expanded') === 'true';
+        apply(next);
+        collapsed[key] = next;
+        store.set('collapsed', collapsed);
+      });
+    }
     return { el, body, head };
   }
-  const badge = (text, extra = '') => h('span', { class: `badge ${extra}`, text });
 
   // ============================================================ object list
   const countSlot = textSlot('0');
-  const objPanel = panel('objects', 'Tracked Objects', { badge: h('span', { class: 'badge', title: 'Number of objects' }, countSlot.node) });
+  const objPanel = panel('objects', 'Objects', { meta: h('span', { class: 'panel__meta num', title: 'Objects in the simulation' }, countSlot.node) });
   const objList = h('ul', { class: 'objlist', role: 'list', 'aria-label': 'Objects in the simulation' });
-  const objEmpty = h('p', { class: 'empty empty--sm', text: 'No objects yet. Launch one from the Launch panel.', hidden: true });
-  const clearDebrisBtn = h('button', { class: 'btn btn--ghost btn--sm', type: 'button', html: `${icons.broom}<span>CLEAR DEBRIS</span>`, title: 'Remove impacted objects and debris' });
+  const objEmpty = h('p', { class: 'empty-line', text: 'No spacecraft yet. Pick a mission in Launch, or right-drag in space.', hidden: true });
+  const clearDebrisBtn = h('button', { class: 'btn btn--quiet btn--sm', type: 'button', html: `${icons.broom}<span>Clear debris</span>`, title: 'Remove impacted objects and debris' });
   objPanel.body.append(objList, objEmpty, h('div', { class: 'panel__foot' }, clearDebrisBtn));
   const rows = new Map();
 
-  // ========================================================== primary state
-  const statePanel = panel('state', 'Primary State Vectors', { badge: badge('YOSHIDA-4') });
+  // ========================================================== selection card
+  const selPanel = panel('selection', 'Selected', { collapsible: false, className: 'panel--selection' });
   const idName = textSlot('');
   const idSub = textSlot('');
   const healthLabel = textSlot('');
   const healthDetail = textSlot('');
+  const summarySlot = textSlot('');
   const idSwatch = h('span', { class: 'swatch' });
-  const healthPill = h('span', { class: 'health', 'data-kind': 'ok' }, h('span', { class: 'health__dot' }), healthLabel.node);
-  const healthRow = h('div', { class: 'health-row' }, healthPill, h('span', { class: 'health__detail' }, healthDetail.node));
-  const card = (label, hint, extraClass = '') => {
+  const statusLine = h('p', { class: 'status-line', 'data-kind': 'ok' },
+    h('span', { class: 'status-line__dot', 'aria-hidden': 'true' }),
+    h('span', { class: 'status-line__label' }, healthLabel.node),
+    h('span', { class: 'status-line__summary' }, summarySlot.node));
+  const statusDetail = h('p', { class: 'status-detail' }, healthDetail.node);
+
+  const statDefs = [
+    ['alt', 'Altitude', 'Height above the surface'],
+    ['speed', 'Speed', 'Speed relative to the centre of the planet'],
+    ['pe', 'Periapsis', 'Lowest point of the orbit, as altitude'],
+    ['ap', 'Apoapsis', 'Highest point of the orbit, as altitude'],
+    ['period', 'Period', 'Time for one full orbit'],
+    ['inc', 'Inclination', 'Tilt of the orbit against the equator: 0° equatorial, 90° polar'],
+  ];
+  const stats = {};
+  const statGrid = h('dl', { class: 'stats' });
+  for (const [key, label, tip] of statDefs) {
     const v = textSlot('—');
     const u = textSlot('');
-    const el = h('div', { class: `stat-card ${extraClass}` },
-      h('div', { class: 'stat-label' }, h('span', { text: label }), hint),
-      h('div', { class: 'stat-value' }, h('span', null, v.node), h('span', { class: 'stat-unit' }, u.node)));
-    return { el, set(str) { const [a, b] = splitUnit(str); v.set(a); u.set(b); } };
-  };
-  const cards = {
-    alt: card('ALTITUDE', h('span', { text: 'MSL' })),
-    speed: card('ORBITAL SPEED', h('span', { text: '|V|' })),
-    pe: card('PERIAPSIS', h('span', { class: 'mk mk--pe', text: 'Pe ●' })),
-    ap: card('APOAPSIS', h('span', { class: 'mk mk--ap', text: 'Ap ●' })),
-  };
-  const heatFill = h('span', { class: 'bar-fill bar-fill--heat' });
+    const wrap = h('div', { class: 'stat', title: tip },
+      h('dt', { class: 'stat__label', text: label }),
+      h('dd', { class: 'stat__value' }, h('span', { class: 'num' }, v.node), h('span', { class: 'stat__unit' }, u.node)));
+    stats[key] = { wrap, set(str) { const [a, b] = splitUnit(str); v.set(a); u.set(b); } };
+    statGrid.append(wrap);
+  }
+  const heatFill = h('span', { class: 'meter__fill meter__fill--heat' });
   const heatSlot = textSlot('0 %');
-  const heatRow = h('div', { class: 'bar-wrap', hidden: true },
-    h('div', { class: 'bar-head' }, h('span', { class: 'dim', text: 'RE-ENTRY HEATING' }), h('span', { class: 'heat-val' }, heatSlot.node)),
-    h('div', { class: 'bar-track', role: 'meter', 'aria-label': 'Re-entry heating', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, heatFill));
-  const stateCard = h('div', { class: 'state', hidden: true },
+  const heatRow = h('div', { class: 'meter', hidden: true },
+    h('div', { class: 'meter__head' }, h('span', { text: 'Re-entry heating' }), h('span', { class: 'num' }, heatSlot.node)),
+    h('div', { class: 'meter__track', role: 'meter', 'aria-label': 'Re-entry heating', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, heatFill));
+
+  // details: orbital elements / environment / instruments
+  const detailsOpen = !!store.get('details', false);
+  const detailsBtn = h('button', { class: 'btn btn--quiet btn--sm details-toggle', type: 'button', 'aria-expanded': detailsOpen ? 'true' : 'false', 'aria-controls': 'hud-details',
+    html: `<span>Details</span>${icons.chevron}` });
+  const detailTabs = [['orbit', 'Orbit'], ['env', 'Environment'], ['instruments', 'Instruments']];
+  const tabBtns = {};
+  const tabPanes = {};
+  const tablist = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Details' });
+  for (const [key, label] of detailTabs) {
+    const tid = `hud-tab-${key}`;
+    const pid = `hud-pane-${key}`;
+    tabBtns[key] = h('button', { class: 'tab', type: 'button', role: 'tab', id: tid, 'aria-controls': pid, 'aria-selected': 'false', tabindex: '-1', text: label });
+    tabPanes[key] = h('div', { class: 'tabpane', role: 'tabpanel', id: pid, 'aria-labelledby': tid, hidden: true });
+    tablist.append(tabBtns[key]);
+  }
+  const details = h('div', { class: 'details', id: 'hud-details', hidden: !detailsOpen }, tablist, ...Object.values(tabPanes));
+
+  const selCard = h('div', { class: 'selcard', hidden: true },
     h('div', { class: 'ident' }, idSwatch,
       h('div', { class: 'ident__text' }, h('div', { class: 'ident__name' }, idName.node), h('div', { class: 'ident__sub' }, idSub.node))),
-    healthRow,
-    h('div', { class: 'telemetry-grid' }, cards.alt.el, cards.speed.el, cards.pe.el, cards.ap.el),
-    heatRow);
-  const stateEmpty = h('div', { class: 'empty' },
-    h('span', { class: 'empty__icon', html: icons.satellite }),
-    h('p', { class: 'empty__title', text: 'NO TARGET SELECTED' }),
-    h('p', { class: 'muted', text: 'Click an object or launch a satellite to see its orbit, speed and fate.' }));
-  statePanel.body.append(stateEmpty, stateCard);
+    statusLine,
+    statusDetail,
+    statGrid,
+    heatRow,
+    h('div', { class: 'selcard__foot' }, detailsBtn),
+    details);
+  const selEmpty = h('div', { class: 'empty' },
+    h('p', { class: 'empty__title', text: 'Nothing selected' }),
+    h('p', { class: 'empty__text', text: 'Pick an object in the list above, or click one in space, to see where it is going and how fast.' }));
+  selPanel.body.append(selEmpty, selCard);
 
-  // ============================================================== tables
   function table(defs) {
     const slots = {};
     const tbody = h('tbody');
     for (const [key, label, tip] of defs) {
       const s = textSlot('—');
-      const tr = h('tr', { title: tip || null }, h('th', { scope: 'row', text: label }), h('td', null, s.node));
+      const tr = h('tr', { title: tip || null }, h('th', { scope: 'row', text: label }), h('td', { class: 'num' }, s.node));
       slots[key] = { slot: s, tr };
       tbody.append(tr);
     }
-    return { el: h('table', { class: 'kepler-table' }, tbody), slots };
+    return { el: h('table', { class: 'kv' }, tbody), slots };
   }
-  const kepPanel = panel('kepler', 'Keplerian Elements', { badge: badge('OSCULATING') });
   const kep = table([
-    ['a', 'Semi-major axis (a)', 'Half the longest diameter of the orbit, from the centre'],
-    ['e', 'Eccentricity (e)', '0 = circle, 0–1 ellipse, ≥ 1 escape'],
-    ['i', 'Inclination (i)', 'Tilt of the orbit plane against the equator'],
-    ['raan', 'RA of asc. node (Ω)', 'Where the orbit crosses the equator going north'],
-    ['argp', 'Arg. of periapsis (ω)', 'Angle from the ascending node to periapsis'],
-    ['nu', 'True anomaly (ν)', 'Angle from periapsis to the spacecraft'],
-    ['T', 'Orbital period (T)', 'Time for one full orbit'],
-    ['eps', 'Specific energy (ε)', 'Kinetic + potential energy per kg. Negative = bound'],
+    ['a', 'Semi-major axis a', 'Half the longest diameter of the orbit, measured from the planet centre'],
+    ['e', 'Eccentricity e', 'Shape of the orbit: 0 is a circle, close to 1 a long ellipse, 1 or more escapes'],
+    ['i', 'Inclination i', 'Tilt of the orbit plane against the equator'],
+    ['raan', 'Ascending node Ω', 'Right ascension of the ascending node: where the orbit crosses the equator heading north'],
+    ['argp', 'Argument of periapsis ω', 'Angle from the ascending node to the lowest point of the orbit'],
+    ['nu', 'True anomaly ν', 'How far around the orbit the craft is, measured from periapsis'],
+    ['T', 'Period T', 'Time for one full orbit'],
+    ['eps', 'Specific energy ε', 'Kinetic plus potential energy per kilogram. Negative means bound to the planet'],
   ]);
-  kepPanel.body.append(kep.el);
-  kepPanel.el.hidden = true;
-
-  const envPanel = panel('env', 'Environment', { badge: badge('FORCE MODEL') });
   const env = table([
-    ['rho', 'Atm. density (ρ)', 'Air density at the current altitude'],
-    ['drag', 'Aerodynamic drag', 'Deceleration from the atmosphere'],
-    ['j2', 'J2 perturbation', "Extra acceleration from Earth's equatorial bulge"],
-    ['g', 'Gravity (g)', 'Local gravitational acceleration'],
-    ['vesc', 'Escape velocity', 'Speed needed to leave from here'],
-    ['fpa', 'Flight-path angle (γ)', 'Climb (+) or descent (−) angle against the local horizon'],
+    ['rho', 'Air density ρ', 'Density of the atmosphere at the current altitude'],
+    ['drag', 'Drag deceleration', 'How strongly the air slows the craft'],
+    ['j2', 'J2 acceleration', "Extra pull from Earth's equatorial bulge"],
+    ['g', 'Gravity g', 'Local gravitational acceleration'],
+    ['vesc', 'Escape speed', 'Speed needed to leave from this altitude'],
+    ['fpa', 'Flight-path angle γ', 'Climbing (+) or descending (−) against the local horizon'],
     ['moon', 'Distance to Moon', 'Distance to the centre of the Moon'],
+    ['latlon', 'Ground position', 'Latitude and longitude of the point directly below'],
   ]);
-  envPanel.body.append(env.el);
-  envPanel.el.hidden = true;
+  tabPanes.orbit.append(kep.el);
+  tabPanes.env.append(env.el);
 
-  const leftCol = h('aside', { class: 'side-dock side-dock--left', id: 'hud-left', 'aria-label': 'Objects and telemetry' },
-    objPanel.el, statePanel.el, kepPanel.el, envPanel.el);
-
-  // ============================================================= right dock
-  const launchPanel = panel('launch', 'Launch', { badge: badge('MISSION') });
-  const launch = createLaunchPanel(handlers, presets);
-  launchPanel.body.append(launch.element);
-
-  const latlonSlot = textSlot('—');
-  const gtPanel = panel('track', 'Ground Track', { badge: h('span', { class: 'badge badge--mono' }, latlonSlot.node) });
-  const gtCanvas = h('canvas', { class: 'gt-canvas', role: 'img', 'aria-label': 'Sub-satellite ground track on a world map' });
-  gtPanel.body.append(h('div', { class: 'canvas-box' }, gtCanvas));
-
-  const chartPanel = panel('history', 'Altitude & Speed', { badge: badge('LIVE PLOT') });
-  const chartCanvas = h('canvas', { class: 'chart-canvas', role: 'img', 'aria-label': 'Altitude (cyan) and speed (amber) history' });
-  chartPanel.body.append(h('div', { class: 'canvas-box' }, chartCanvas));
-
-  const settingsPanel = panel('settings', 'Settings', { badge: badge('CONFIG') });
-  const guiHost = h('div', { class: 'settings-host' });
-  const resetBtn = h('button', { class: 'btn btn--danger-ghost btn--sm', type: 'button', html: `${icons.restart}<span>RESET SIMULATION</span>` });
-  settingsPanel.body.append(guiHost, h('div', { class: 'panel__foot' }, resetBtn));
-
-  const rightCol = h('aside', { class: 'side-dock side-dock--right', id: 'hud-right', 'aria-label': 'Launch, instruments and settings' },
-    launchPanel.el, gtPanel.el, chartPanel.el, settingsPanel.el);
-
-  // ============================================================ flight deck
-  const navCanvas = h('canvas', { class: 'navball', role: 'img', 'aria-label': 'Navball: horizon pitch from the flight-path angle; cyan pip shows the true anomaly (top = periapsis)' });
+  const navCanvas = h('canvas', { class: 'navball', role: 'img', 'aria-label': 'Navball: the horizon tilts with the flight-path angle; the dot on the rim shows the true anomaly, periapsis at the top' });
   const fpaSlot = textSlot('—');
   const nuSlot = textSlot('—');
+  const latlonSlot = textSlot('—');
+  const gtCanvas = h('canvas', { class: 'gt-canvas', role: 'img', 'aria-label': 'Ground track: the path below the spacecraft on a world map' });
+  const chartCanvas = h('canvas', { class: 'chart-canvas', role: 'img', 'aria-label': 'Altitude (solid line) and speed (dashed line) history' });
+  tabPanes.instruments.append(
+    h('figure', { class: 'figure' },
+      h('figcaption', null, h('span', { text: 'Ground track' }), h('span', { class: 'num figure__meta' }, latlonSlot.node)),
+      gtCanvas),
+    h('figure', { class: 'figure' },
+      h('figcaption', null, h('span', { text: 'Altitude and speed' }),
+        h('span', { class: 'legend' }, h('span', { class: 'legend__solid', text: 'altitude' }), h('span', { class: 'legend__dash', text: 'speed' }))),
+      chartCanvas),
+    h('figure', { class: 'figure figure--nav' },
+      navCanvas,
+      h('div', null,
+        h('figcaption', null, h('span', { text: 'Attitude' })),
+        h('dl', { class: 'navread' },
+          h('div', { title: 'Flight-path angle: climbing (+) or descending (−)' }, h('dt', { text: 'Flight-path angle' }), h('dd', { class: 'num' }, fpaSlot.node)),
+          h('div', { title: 'True anomaly: 0° at periapsis, 180° at apoapsis' }, h('dt', { text: 'True anomaly' }), h('dd', { class: 'num' }, nuSlot.node))),
+        h('p', { class: 'figure__note', text: 'Rim dot: position along the orbit, periapsis at the top.' }))));
+
+  const leftCol = h('aside', { class: 'side-dock side-dock--left', id: 'hud-left', 'aria-label': 'Objects and selection' },
+    objPanel.el, selPanel.el);
+
+  // ============================================================= right dock
+  const launchPanel = panel('launch', 'Launch');
+  const launch = createLaunchPanel(handlers, presets);
+  launchPanel.body.append(launch.element);
+  const rightCol = h('aside', { class: 'side-dock side-dock--right', id: 'hud-right', 'aria-label': 'Launch' }, launchPanel.el);
+
+  // ======================================================= settings popover
+  const guiHost = h('div', { class: 'settings-host' });
+  const resetBtn = h('button', { class: 'btn btn--danger btn--sm', type: 'button', html: `${icons.restart}<span>Reset simulation</span>` });
+  const closeSettings = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Close settings', html: icons.close });
+  const settingsPop = h('div', { class: 'popover', id: 'hud-settings', role: 'dialog', 'aria-modal': 'false', 'aria-labelledby': 'hud-settings-title', hidden: true },
+    h('div', { class: 'popover__head' }, h('h2', { class: 'popover__title', id: 'hud-settings-title', text: 'Settings' }), closeSettings),
+    guiHost,
+    h('div', { class: 'popover__foot' },
+      h('p', { class: 'popover__note', text: 'Settings are saved in this browser.' }),
+      resetBtn));
+
+  // ============================================================ flight deck
+  const ctlName = textSlot('');
+  const ctlSwatch = h('span', { class: 'swatch' });
   const padBtns = {};
-  const pad = h('div', { class: 'thruster-pad', role: 'group', 'aria-label': 'Thrusters: hold to burn' });
-  for (const [dir, label, key, axis, tip] of THRUSTERS) {
+  const pad = h('div', { class: 'pad', role: 'group', 'aria-label': 'Thrusters, hold to fire' });
+  for (const [dir, label, key, tip] of THRUSTERS) {
     const b = h('button', {
-      class: 'burn-btn', type: 'button', dataset: { dir }, disabled: true, 'aria-pressed': 'false',
-      'aria-label': `${label.replace('+', 'plus').replace('−', 'minus')} burn, hold to fire`, 'aria-keyshortcuts': key, title: `${tip}. Hold to burn (${key})`,
+      class: 'burn', type: 'button', dataset: { dir }, disabled: true, 'aria-pressed': 'false',
+      'aria-label': `${label} thruster, hold to fire`, 'aria-keyshortcuts': key, title: `${tip}. Hold to fire (${key}).`,
     },
-    h('span', { class: 'burn-btn__icon', html: icons[dir] }),
-    h('span', { class: 'burn-btn__label', text: label }),
-    h('span', { class: 'key', text: `[${key}] ${axis}` }));
+    h('span', { class: 'burn__icon', html: icons[dir] }),
+    h('span', { class: 'burn__label', text: label }),
+    h('kbd', { class: 'burn__key', text: key, 'aria-hidden': 'true' }));
     padBtns[dir] = b;
     pad.append(b);
   }
@@ -327,57 +400,75 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
 
   const initialThrottle = Number(settings?.physics?.throttle) || 100;
   const throttleSlot = textSlot(`${initialThrottle}%`);
-  const throttle = h('input', { class: 'range range--warn', type: 'range', min: 5, max: 100, step: 1, value: initialThrottle, id: 'hud-throttle', 'aria-valuetext': `${initialThrottle} percent` });
+  const throttle = h('input', { class: 'range', type: 'range', min: 5, max: 100, step: 1, value: initialThrottle, id: 'hud-throttle', 'aria-valuetext': `${initialThrottle} percent` });
   const targetSlot = textSlot('850 km');
   const target = h('input', { class: 'range', type: 'range', min: 200, max: 35786, step: 50, value: 850, id: 'hud-target-alt', 'aria-valuetext': '850 kilometres' });
+  const apHelp = { circularize: textSlot('Round orbit at this altitude'), hohmann: textSlot('Two burns to the target altitude'), refuel: textSlot('Fill the tanks') };
+  const apBtn = (key, label, help) => h('button', { class: 'btn btn--action', type: 'button', disabled: true },
+    h('span', { class: 'btn__label', text: label }), h('span', { class: 'btn__help' }, help.node));
   const apBtns = {
-    circularize: h('button', { class: 'btn btn--success', type: 'button', disabled: true, text: 'AUTO-CIRCULARIZE', title: 'Burn to make the orbit circular at the current altitude' }),
-    hohmann: h('button', { class: 'btn btn--warn', type: 'button', disabled: true, text: 'HOHMANN TO TARGET', title: 'Two-burn transfer to the target altitude' }),
-    refuel: h('button', { class: 'btn', type: 'button', disabled: true, text: 'RESUPPLY PROPELLANT', title: 'Refill the tanks (sandbox cheat)' }),
+    circularize: apBtn('circularize', 'Circularize', apHelp.circularize),
+    hohmann: apBtn('hohmann', 'Transfer to target', apHelp.hohmann),
+    refuel: apBtn('refuel', 'Refuel', apHelp.refuel),
   };
-  const fuelSlot = textSlot('— / — kg');
-  const dvSlot = textSlot('Δv: — m/s');
-  const fuelFill = h('span', { class: 'bar-fill' });
-  const fuelTrack = h('div', { class: 'bar-track', role: 'meter', 'aria-label': 'Propellant remaining', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, fuelFill);
-  const fuelWrap = h('div', { class: 'bar-wrap fuel' },
-    h('div', { class: 'bar-head' }, h('span', { class: 'dim', text: 'PROPELLANT' }), h('span', { class: 'fuel__val' }, fuelSlot.node, ' ', h('span', { class: 'dim' }, '(', dvSlot.node, ')'))),
-    fuelTrack);
+  const fuelSlot = textSlot('—');
+  const dvSlot = textSlot('—');
   const dvUsedSlot = textSlot(fmtDeltaV(0));
+  const fuelFill = h('span', { class: 'meter__fill' });
+  const fuelTrack = h('div', { class: 'meter__track', role: 'meter', 'aria-label': 'Propellant remaining', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, fuelFill);
+  const fuelWrap = h('div', { class: 'meter fuel' },
+    h('div', { class: 'meter__head' },
+      h('span', { title: 'Propellant left in the tanks' }, 'Propellant ', h('span', { class: 'num' }, fuelSlot.node)),
+      h('span', { title: 'Velocity change the remaining propellant can still provide (rocket equation), and the total spent so far' }, 'Δv left ', h('span', { class: 'num' }, dvSlot.node), ' · used ', h('span', { class: 'num' }, dvUsedSlot.node))),
+    fuelTrack);
 
-  const apToggle = h('button', { class: 'btn ap-toggle', type: 'button', 'aria-expanded': 'false', 'aria-controls': 'hud-autopilot', html: `<span>AUTOPILOT</span>${icons.chevron}` });
-  const deckNote = h('p', { class: 'deck__note', text: 'SELECT A SPACECRAFT TO FLY' });
-  const autopilot = h('div', { class: 'autopilot-col', id: 'hud-autopilot' },
-    h('div', { class: 'slider-row' },
-      h('label', { class: 'slider-top', for: 'hud-throttle' }, h('span', { text: 'THROTTLE' }), h('span', { class: 'v-warn' }, throttleSlot.node)),
-      throttle),
-    h('div', { class: 'slider-row' },
-      h('label', { class: 'slider-top', for: 'hud-target-alt' }, h('span', { text: 'TARGET ALT' }), h('span', { class: 'v-accent' }, targetSlot.node)),
-      target),
-    apBtns.circularize, apBtns.hohmann, apBtns.refuel);
+  const apToggle = h('button', { class: 'btn btn--quiet btn--sm ap-toggle', type: 'button', 'aria-expanded': 'false', 'aria-controls': 'hud-autopilot', html: `<span>Autopilot</span>${icons.chevron}` });
+  const autopilot = h('div', { class: 'deck__ap', id: 'hud-autopilot' },
+    h('div', { class: 'deck__sliders' },
+      h('div', { class: 'slider' },
+        h('label', { class: 'slider__top', for: 'hud-throttle', title: 'Engine thrust while a thruster is held' }, h('span', { text: 'Throttle' }), h('span', { class: 'num' }, throttleSlot.node)),
+        throttle),
+      h('div', { class: 'slider' },
+        h('label', { class: 'slider__top', for: 'hud-target-alt', title: 'Altitude used by "Transfer to target"' }, h('span', { text: 'Target altitude' }), h('span', { class: 'num' }, targetSlot.node)),
+        target)),
+    h('div', { class: 'deck__actions' }, apBtns.circularize, apBtns.hohmann, apBtns.refuel));
 
-  const deck = h('section', { class: 'flight-deck', 'aria-label': 'Flight deck' },
-    h('div', { class: 'deck__nav' },
-      navCanvas,
-      h('dl', { class: 'deck__read' },
-        h('div', null, h('dt', { text: 'γ' }), h('dd', null, fpaSlot.node)),
-        h('div', null, h('dt', { text: 'ν' }), h('dd', null, nuSlot.node)))),
-    h('div', { class: 'deck__main' },
-      h('div', { class: 'deck__head' },
-        h('span', { class: 'deck__title', text: 'FLIGHT DECK' }),
-        h('span', { class: 'deck__dv', title: 'Total Δv spent by the selected object' }, 'Δv USED ', dvUsedSlot.node),
-        apToggle),
-      pad,
-      fuelWrap,
-      deckNote),
-    autopilot);
+  const deck = h('section', { class: 'deck', 'aria-label': 'Flight controls', hidden: true },
+    h('div', { class: 'deck__head' },
+      h('p', { class: 'deck__ctl' }, h('span', { class: 'deck__ctl-label', text: 'Controlling' }), ctlSwatch, h('strong', null, ctlName.node)),
+      h('span', { class: 'deck__hint', text: 'Hold a thruster to fire' }),
+      apToggle),
+    h('div', { class: 'deck__body' },
+      h('div', { class: 'deck__pad' },
+        pad,
+        fuelWrap),
+      autopilot));
+
+  // ======================================================= first-run guide
+  const guide = h('section', { class: 'guide', 'aria-label': 'Getting started', hidden: true },
+    h('ol', { class: 'guide__steps' },
+      h('li', null, h('strong', { text: 'Select' }), h('span', { text: 'Click an object in the list or in space.' })),
+      h('li', null, h('strong', { text: 'Launch' }), h('span', { text: 'Pick a mission on the right, or right-drag in space.' })),
+      h('li', null, h('strong', { text: 'Fly' }), h('span', { text: 'Hold a thruster button, or W A S D Q E.' }))),
+    h('button', { class: 'btn btn--sm', type: 'button', text: 'Got it' }));
 
   // ================================================================ misc
   const toasts = h('div', { class: 'toasts', role: 'status', 'aria-live': 'polite', 'aria-relevant': 'additions' });
   const scrim = h('div', { class: 'scrim', hidden: true });
   const centerStack = h('div', { class: 'center-stack' }, alertBanner, toasts);
-  root.append(topbar, centerStack, leftCol, rightCol, deck, scrim, srAlert);
+  root.append(topbar, centerStack, leftCol, rightCol, deck, guide, settingsPop, scrim, srAlert);
   const modal = createHelpModal(root);
   const settingsUI = createSettings(guiHost, settings, handlers.onSettingChange);
+
+  // Expose the bottom bars' heights so the docks can stop above them on medium screens.
+  if (typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(() => {
+      root.style.setProperty('--deck-h', `${deck.hidden ? 0 : deck.offsetHeight}px`);
+      root.style.setProperty('--guide-h', `${guide.hidden ? 0 : guide.offsetHeight}px`);
+    });
+    ro.observe(deck);
+    ro.observe(guide);
+  }
 
   const navball = createNavball(navCanvas);
   const groundTrack = createGroundTrack(gtCanvas, { imageUrl: mapImage, capacity: TRACK_POINTS });
@@ -402,10 +493,65 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     apToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
   });
 
+  // details disclosure + tabs (remembered)
+  let activeTab = detailTabs.some(([k]) => k === store.get('detailsTab')) ? store.get('detailsTab') : 'orbit';
+  function selectTab(key, focus = false) {
+    activeTab = key;
+    for (const [k] of detailTabs) {
+      tabBtns[k].setAttribute('aria-selected', k === key ? 'true' : 'false');
+      tabBtns[k].tabIndex = k === key ? 0 : -1;
+      tabPanes[k].hidden = k !== key;
+    }
+    if (focus) tabBtns[key].focus();
+    store.set('detailsTab', key);
+  }
+  for (const [k] of detailTabs) tabBtns[k].addEventListener('click', () => selectTab(k));
+  tablist.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    e.preventDefault();
+    const keys = detailTabs.map(([k]) => k);
+    const i = keys.indexOf(activeTab);
+    selectTab(keys[(i + (e.key === 'ArrowRight' ? 1 : keys.length - 1)) % keys.length], true);
+  });
+  selectTab(activeTab);
+  detailsBtn.addEventListener('click', () => {
+    const open = detailsBtn.getAttribute('aria-expanded') !== 'true';
+    detailsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    details.hidden = !open;
+    store.set('details', open);
+  });
+
+  // settings popover
+  function setSettingsOpen(open) {
+    settingsPop.hidden = !open;
+    gearBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      settingsUI.refresh();
+      (settingsPop.querySelector('.lil-title, input, select, button') || closeSettings).focus({ preventScroll: true });
+    }
+  }
+  gearBtn.addEventListener('click', () => setSettingsOpen(settingsPop.hidden));
+  closeSettings.addEventListener('click', () => { setSettingsOpen(false); gearBtn.focus(); });
+  document.addEventListener('pointerdown', (e) => {
+    if (!settingsPop.hidden && !settingsPop.contains(e.target) && !gearBtn.contains(e.target)) setSettingsOpen(false);
+  });
+
+  // first-run guide
+  let guideDone = !!store.get('guideDone', false);
+  guide.querySelector('button').addEventListener('click', () => {
+    guideDone = true;
+    store.set('guideDone', true);
+    updateGuide();
+  });
+  function updateGuide() {
+    guide.hidden = guideDone || !!state.canFly;
+    root.style.setProperty('--guide-h', `${guide.hidden ? 0 : guide.offsetHeight}px`);
+  }
+
   let lastThrustN = NaN;
   const updateThrottleLabel = () => {
     const pct = Number(throttle.value);
-    const kn = Number.isFinite(lastThrustN) ? ` (${fmtNumber(lastThrustN / 1000, 1)} kN)` : '';
+    const kn = Number.isFinite(lastThrustN) ? ` · ${fmtNumber(lastThrustN / 1000, 1)} kN` : '';
     throttleSlot.set(`${pct}%${kn}`);
     throttle.setAttribute('aria-valuetext', `${pct} percent`);
   };
@@ -417,11 +563,12 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   });
   target.addEventListener('input', () => {
     const km = Number(target.value);
+    state.targetAlt = km;
     targetSlot.set(`${fmtNumber(km)} km`);
     target.setAttribute('aria-valuetext', `${fmtNumber(km)} kilometres`);
+    updateAutopilotHelp();
     call(handlers.onTargetAltitude, km);
   });
-  // sliders released by pointer give focus back to the page so W/S/… work again
   for (const r of [throttle, target]) {
     let viaPointer = false;
     r.addEventListener('pointerdown', () => { viaPointer = true; });
@@ -432,17 +579,16 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   let resetArmed = 0;
   const disarm = () => {
     resetArmed = 0;
-    resetBtn.lastChild.textContent = 'RESET SIMULATION';
+    resetBtn.lastChild.textContent = 'Reset simulation';
     resetBtn.classList.remove('is-armed');
   };
   resetBtn.addEventListener('click', () => {
     if (resetArmed) { clearTimeout(resetArmed); disarm(); call(handlers.onReset); return; }
-    resetBtn.lastChild.textContent = 'CLICK AGAIN TO RESET';
+    resetBtn.lastChild.textContent = 'Click again to reset';
     resetBtn.classList.add('is-armed');
     resetArmed = setTimeout(disarm, 3000);
   });
 
-  // object list (delegated)
   objList.addEventListener('click', (e) => {
     const li = e.target.closest('li[data-id]');
     if (!li) return;
@@ -460,6 +606,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   });
 
   // ---- thrusters: hold to burn ----
+  const isFiring = () => state.pointerBurns.size > 0 || state.mainBurns.size > 0;
   function refreshFiring(dir) {
     const on = state.pointerBurns.has(dir) || state.mainBurns.has(dir);
     const b = padBtns[dir];
@@ -472,20 +619,20 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     state.pointerBurns.add(dir);
     refreshFiring(dir);
     call(handlers.onThrustStart, dir);
-    updateNavFiring();
+    navUpdate();
   }
   function burnEnd(dir) {
     if (!state.pointerBurns.has(dir)) return;
     state.pointerBurns.delete(dir);
     refreshFiring(dir);
     call(handlers.onThrustEnd, dir);
-    updateNavFiring();
+    navUpdate();
   }
   const endAllBurns = () => { for (const d of [...state.pointerBurns]) burnEnd(d); };
   for (const [dir, b] of Object.entries(padBtns)) {
     b.addEventListener('pointerdown', (e) => {
       if (e.button > 0) return;
-      e.preventDefault(); // no focus steal / text selection / long-press menu
+      e.preventDefault();
       burnStart(dir);
     });
     for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) b.addEventListener(ev, () => burnEnd(dir));
@@ -501,7 +648,6 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
 
   // ---- drawers (narrow screens) ----
   const narrowMQ = matchMedia('(max-width: 819.98px)');
-  const wideMQ = matchMedia('(min-width: 1280px)');
   function setDrawer(side, open) {
     const col = side === 'left' ? leftCol : rightCol;
     const btn = side === 'left' ? leftToggle : rightToggle;
@@ -513,31 +659,30 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   leftToggle.addEventListener('click', () => setDrawer('left', !leftCol.classList.contains('is-open')));
   rightToggle.addEventListener('click', () => setDrawer('right', !rightCol.classList.contains('is-open')));
   scrim.addEventListener('click', () => { setDrawer('left', false); setDrawer('right', false); });
-
-  // camera buttons live in the top bar on wide screens, at the top of the left dock otherwise
-  const camStrip = h('div', { class: 'panel camstrip' });
+  // On narrow screens the camera control moves from the top bar into the left drawer.
+  const camStrip = h('div', { class: 'panel camstrip' }, h('span', { class: 'camstrip__label', text: 'Camera' }));
+  const camHome = camgroup.parentElement;
+  const camAnchor = camgroup.nextSibling;
   const placeCamera = () => {
-    if (wideMQ.matches) { if (camgroup.parentElement !== camHome) camHome.append(camgroup); camStrip.remove(); }
-    else { camStrip.append(camgroup); if (camStrip.parentElement !== leftCol) leftCol.prepend(camStrip); }
+    if (narrowMQ.matches) { camStrip.append(camgroup); if (camStrip.parentElement !== leftCol) leftCol.prepend(camStrip); }
+    else if (camgroup.parentElement !== camHome) { camHome.insertBefore(camgroup, camAnchor); camStrip.remove(); }
   };
   const onMQ = () => {
     if (!narrowMQ.matches) { setDrawer('left', false); setDrawer('right', false); }
     placeCamera();
   };
   narrowMQ.addEventListener?.('change', onMQ);
-  wideMQ.addEventListener?.('change', onMQ);
   placeCamera();
 
-  // Pointer clicks on HUD buttons should not keep focus, so the app's keyboard
-  // shortcuts (Space, W, …) keep working. Keyboard activation keeps focus.
+  // Pointer clicks on HUD buttons drop focus so the app's keyboard shortcuts keep working.
   root.addEventListener('click', (e) => {
     if (e.detail === 0) return;
     const b = e.target.closest('button, a, summary');
-    if (b && !b.closest('.modal, form, .settings-host') && document.activeElement === b) b.blur();
+    if (b && !b.closest('.modal, form, .settings-host, .popover, [role="tablist"]') && document.activeElement === b) b.blur();
   });
 
-  // HUD-owned shortcuts: "?" opens help, Esc closes drawers.
   const onKey = (e) => {
+    if (e.key === 'Escape' && !settingsPop.hidden) { setSettingsOpen(false); gearBtn.focus(); return; }
     if (e.defaultPrevented || isTyping(e) || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === '?' && !modal.isOpen) { e.preventDefault(); modal.open(); return; }
     if (e.key === 'Escape' && !modal.isOpen && (leftCol.classList.contains('is-open') || rightCol.classList.contains('is-open'))) {
@@ -561,7 +706,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
       clearTimeout(timer);
       if (!el.isConnected || el.classList.contains('is-leaving')) return;
       el.classList.add('is-leaving');
-      setTimeout(() => el.remove(), prefersReducedMotion() ? 0 : 200);
+      setTimeout(() => el.remove(), prefersReducedMotion() ? 0 : 160);
     };
     const start = () => { started = performance.now(); timer = setTimeout(dismiss, remaining); };
     el.addEventListener('mouseenter', () => { clearTimeout(timer); remaining -= performance.now() - started; });
@@ -600,12 +745,12 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
       playBtn.setAttribute('aria-label', paused ? 'Resume simulation' : 'Pause simulation');
       playBtn.setAttribute('aria-pressed', paused ? 'true' : 'false');
       playBtn.title = paused ? 'Resume (Space)' : 'Pause (Space)';
+      pausedTag.hidden = !paused;
       toggleClass(timegroup, 'is-paused', paused);
     }
     if (typeof warpLimited === 'boolean' && warpLimited !== lastLimited) {
       lastLimited = warpLimited;
       limitedChip.hidden = !warpLimited;
-      toggleClass(warpLabel, 'is-limited', warpLimited);
     }
   }
 
@@ -613,34 +758,34 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     const fixed = FIXED_BODIES.has(b.id);
     const name = textSlot('');
     const kind = textSlot('');
-    const status = textSlot('');
     const swatch = h('span', { class: 'swatch' });
-    const st = h('span', { class: 'obj-status', hidden: fixed }, status.node);
     const focusBtn = h('button', { class: 'icon-btn icon-btn--sm', type: 'button', dataset: { action: 'focus' }, html: icons.focus });
     const delBtn = fixed ? null : h('button', { class: 'icon-btn icon-btn--sm icon-btn--danger', type: 'button', dataset: { action: 'delete' }, html: icons.trash });
     const main = h('button', { class: 'obj__main', type: 'button', 'aria-pressed': 'false' },
       swatch,
-      h('span', { class: 'obj__text' }, h('span', { class: 'obj__name' }, name.node), h('span', { class: 'obj__kind' }, kind.node)));
+      h('span', { class: 'obj__name' }, name.node),
+      h('span', { class: 'obj__kind' }, kind.node));
     const li = h('li', { class: 'obj', dataset: { id: b.id } },
-      main, st, h('span', { class: 'obj__actions' }, focusBtn, delBtn || h('span', { class: 'spacer', 'aria-hidden': 'true' })));
-    return { li, main, swatch, st, focusBtn, delBtn, name, kind, status, last: {} };
+      main, h('span', { class: 'obj__actions' }, focusBtn, delBtn || h('span', { class: 'spacer', 'aria-hidden': 'true' })));
+    return { li, main, swatch, focusBtn, delBtn, name, kind, fixed, last: {} };
   }
   function updateRow(r, b) {
     const L = r.last;
     if (L.name !== b.name) {
       L.name = b.name;
       r.name.set(b.name || b.id);
-      r.focusBtn.setAttribute('aria-label', `Focus camera on ${b.name}`);
-      r.focusBtn.title = 'Focus (F / double-click)';
+      r.focusBtn.setAttribute('aria-label', `Point the camera at ${b.name}`);
+      r.focusBtn.title = 'Point the camera at it (F, or double-click)';
       if (r.delBtn) { r.delBtn.setAttribute('aria-label', `Delete ${b.name}`); r.delBtn.title = 'Delete (Del)'; }
     }
-    if (L.kind !== b.kind) { L.kind = b.kind; r.kind.set(kindLabel(b.kind).toUpperCase()); }
-    if (L.color !== b.color) { L.color = b.color; r.swatch.style.setProperty('--c', b.color || '#94a3b8'); }
-    if (L.status !== b.status) {
+    if (L.color !== b.color) { L.color = b.color; r.swatch.style.setProperty('--c', b.color || '#8a94a3'); }
+    if (L.kind !== b.kind || L.status !== b.status) {
+      L.kind = b.kind;
       L.status = b.status;
-      r.status.set((STATUS_LABEL[b.status] || b.status || '').toUpperCase());
-      r.st.dataset.status = b.status || '';
-      toggleClass(r.li, 'is-impacted', b.status === 'impacted');
+      // status words only when it deviates from the normal case
+      const st = !r.fixed && b.status && b.status !== 'orbiting' ? STATUS_LABEL[b.status] || b.status : '';
+      r.kind.set(st ? `${kindLabel(b.kind)} · ${st}` : kindLabel(b.kind));
+      r.li.dataset.status = r.fixed ? '' : b.status || '';
     }
   }
   function setBodies(list) {
@@ -662,7 +807,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     }
     for (const [id, r] of rows) if (!seen.has(id)) { r.li.remove(); rows.delete(id); }
     countSlot.set(String(rows.size));
-    objEmpty.hidden = rows.size > 0;
+    objEmpty.hidden = [...rows.values()].some((r) => !r.fixed);
     applySelection();
   }
 
@@ -689,14 +834,14 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
       state.canFly = can;
       for (const b of Object.values(padBtns)) b.disabled = !can;
       for (const b of Object.values(apBtns)) b.disabled = !can;
-      toggleClass(deck, 'is-disabled', !can);
+      deck.hidden = !can;
+      toggleClass(root, 'has-deck', can);
+      root.style.setProperty('--deck-h', `${deck.hidden ? 0 : deck.offsetHeight}px`);
       if (!can) endAllBurns();
+      updateGuide();
     }
-    const note = state.selectedId == null ? 'SELECT A SPACECRAFT TO FLY'
-      : FIXED_BODIES.has(state.selectedId) ? `${(body?.name || 'THIS BODY').toUpperCase()} IS NOT A SPACECRAFT`
-        : body?.status === 'impacted' ? 'LOSS OF SIGNAL: OBJECT IMPACTED' : '';
-    if (deckNote.textContent !== note) deckNote.textContent = note;
-    deckNote.hidden = can;
+    if (body) ctlName.set(body.name || state.selectedId);
+    if (body && body.color) ctlSwatch.style.setProperty('--c', body.color);
   }
 
   function setSelection(id) {
@@ -705,33 +850,44 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     if (state.selectedId == null) setTelemetry(null);
   }
 
+  function updateAutopilotHelp() {
+    const t = state.lastTelemetry;
+    const est = t ? autopilotEstimates(t, state.targetAlt) : null;
+    const dvLeft = t && Number.isFinite(t.dvRemainingMs) ? t.dvRemainingMs : NaN;
+    const short = (need) => Number.isFinite(dvLeft) && need > dvLeft + 0.5;
+    if (est) {
+      apHelp.circularize.set(est.circ < 1 ? 'Already circular' : `Round orbit here · ${fmtNumber(est.circ)}\u00a0m/s${short(est.circ) ? ' · too little propellant' : ''}`);
+      toggleClass(apBtns.circularize, 'is-short', short(est.circ));
+    } else apHelp.circularize.set('Round orbit at this altitude');
+    if (est && est.hohmann) {
+      const hm = est.hohmann;
+      apHelp.hohmann.set(`${fmtNumber(state.targetAlt)}\u00a0km in ${fmtPeriod(hm.timeS)} · ${fmtNumber(hm.dv)}\u00a0m/s${short(hm.dv) ? ' · too little propellant' : ''}`);
+      toggleClass(apBtns.hohmann, 'is-short', short(hm.dv));
+    } else apHelp.hohmann.set(`Two burns to ${fmtNumber(state.targetAlt)}\u00a0km`);
+    if (t && Number.isFinite(t.maxFuelKg)) apHelp.refuel.set(`Fill tanks to ${fmtNumber(t.maxFuelKg)}\u00a0kg`);
+  }
+
   let telVisible = false;
   let lastHealth = '';
   let lastHeat = -1;
   let lastColor = '';
   let lastFuelPct = -1;
   let lastIdKind = '';
-  function setPill(kind, text) {
-    pillSlot.set(text);
-    if (statusPill.dataset.kind !== kind) statusPill.dataset.kind = kind;
-  }
+  let apTick = 0;
   function setTelemetry(t) {
     const show = !!t;
     if (show !== telVisible) {
       telVisible = show;
-      stateCard.hidden = !show;
-      stateEmpty.hidden = show;
+      selCard.hidden = !show;
+      selEmpty.hidden = show;
       if (!show) {
-        kepPanel.el.hidden = true;
-        envPanel.el.hidden = true;
         lastIdKind = '';
-        setPill('none', 'STANDBY');
-        metSlot.set(fmtMET(NaN));
         latlonSlot.set('—');
         navUpdate({ active: false });
       }
     }
-    if (!t) { state.telemetryId = undefined; lastHealth = ''; return; }
+    state.lastTelemetry = t || null;
+    if (!t) { lastHealth = ''; return; }
 
     const id = String(t.id ?? '');
     const isEarth = id === 'earth';
@@ -739,29 +895,40 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     const idKind = isEarth ? 'earth' : fixed ? 'moon' : 'craft';
     if (idKind !== lastIdKind) {
       lastIdKind = idKind;
-      kepPanel.el.hidden = isEarth;
-      envPanel.el.hidden = isEarth;
+      for (const k of ['pe', 'ap', 'period', 'inc']) stats[k].wrap.hidden = fixed;
+      detailsBtn.parentElement.hidden = isEarth;
+      details.classList.toggle('is-suppressed', isEarth);
       env.slots.moon.tr.hidden = id === 'moon';
     }
-    if (t.color !== lastColor) { lastColor = t.color; idSwatch.style.setProperty('--c', t.color || '#94a3b8'); }
+    if (t.color !== lastColor) { lastColor = t.color; idSwatch.style.setProperty('--c', t.color || '#8a94a3'); }
     idName.set(t.name || id);
-    idSub.set(`${kindLabel(t.kind).toUpperCase()} · ${t.centralBody === 'Moon' ? 'LUNAR' : 'EARTH'} ${isEarth ? 'SYSTEM' : 'ORBIT'}`);
+    const met = Number.isFinite(t.metS) ? t.metS : t.ageS;
+    idSub.set(fixed ? kindLabel(t.kind) : `${kindLabel(t.kind)} around ${t.centralBody === 'Moon' ? 'the Moon' : 'Earth'} · ${fmtMET(met)}`);
 
     const hl = fixed ? null : orbitHealth(t);
     const hk = hl ? hl.kind : 'none';
     if (hk !== lastHealth) {
       lastHealth = hk;
-      healthPill.dataset.kind = hk;
-      healthRow.hidden = !hl;
+      statusLine.dataset.kind = hk;
+      statusLine.hidden = !hl;
+      statusDetail.hidden = !hl;
     }
-    if (hl) { healthLabel.set(hl.label); healthDetail.set(hl.detail); setPill(hl.kind, hl.pill); }
-    else setPill('track', `TRACKING ${(t.name || id).toUpperCase()}`);
+    if (hl) {
+      healthLabel.set(hl.label);
+      healthDetail.set(hl.detail);
+      const bits = [`${fmtNumber(t.altitudeKm, t.altitudeKm < 100 ? 1 : 0)} km`];
+      if (Number.isFinite(t.periodS)) bits.push(`${t.periodS < 3 * 3600 ? `${Math.round(t.periodS / 60)} min` : fmtPeriod(t.periodS)} period`);
+      summarySlot.set(`· ${bits.join(' · ')}`);
+    }
 
-    metSlot.set(fmtMET(Number.isFinite(t.metS) ? t.metS : t.ageS));
-    cards.alt.set(fmtDistanceKm(t.altitudeKm));
-    cards.speed.set(fmtSpeedKms(t.speedKms));
-    cards.pe.set(fixed ? '—' : fmtDistanceKm(t.periapsisKm));
-    cards.ap.set(fixed ? '—' : t.apoapsisKm === Infinity ? '∞ escape' : fmtDistanceKm(t.apoapsisKm));
+    stats.alt.set(fmtDistanceKm(t.altitudeKm));
+    stats.speed.set(fmtSpeedKms(t.speedKms));
+    if (!fixed) {
+      stats.pe.set(fmtDistanceKm(t.periapsisKm));
+      stats.ap.set(t.apoapsisKm === Infinity ? '∞ unbound' : fmtDistanceKm(t.apoapsisKm));
+      stats.period.set(t.periodS === Infinity ? '∞' : fmtPeriod(t.periodS).replace(/ /g, '\u00a0'));
+      stats.inc.set(fmtAngle(t.inclinationDeg, 1));
+    }
 
     const heat = Math.max(0, Math.min(1, t.heating || 0));
     if (Math.abs(heat - lastHeat) > 0.01 || (heat === 0) !== (lastHeat === 0)) {
@@ -772,9 +939,9 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
       setAttr(heatRow.lastChild, 'aria-valuenow', Math.round(heat * 100));
     }
 
-    if (!isEarth) {
+    if (!isEarth && !details.hidden) {
       const unbound = t.periodS === Infinity || t.eccentricity >= 1;
-      kep.slots.a.slot.set(unbound && !(t.semiMajorAxisKm > 0) ? 'HYPERBOLIC' : fmtDistanceKm(t.semiMajorAxisKm));
+      kep.slots.a.slot.set(unbound && !(t.semiMajorAxisKm > 0) ? 'hyperbolic' : fmtDistanceKm(t.semiMajorAxisKm));
       kep.slots.e.slot.set(fmtEccentricity(t.eccentricity));
       kep.slots.i.slot.set(fmtAngle(t.inclinationDeg));
       kep.slots.raan.slot.set(fmtAngle(t.raanDeg));
@@ -790,43 +957,42 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
       env.slots.fpa.slot.set(fmtSignedAngle(t.flightPathAngleDeg));
       env.slots.moon.slot.set(fmtDistanceKm(t.distanceToMoonKm));
     }
-
     if (Number.isFinite(t.latitudeDeg) && Number.isFinite(t.longitudeDeg)) {
-      latlonSlot.set(`${fmtLatitude(t.latitudeDeg).replace(' ', '')} ${fmtLongitude(t.longitudeDeg).replace(' ', '')}`);
+      const ll = `${fmtLatitude(t.latitudeDeg)}, ${fmtLongitude(t.longitudeDeg)}`;
+      latlonSlot.set(ll);
+      env.slots.latlon.slot.set(ll);
     }
 
-    // flight deck
     fpaSlot.set(fixed ? '—' : fmtSignedAngle(t.flightPathAngleDeg, 1));
     nuSlot.set(fixed ? '—' : fmtAngle(t.trueAnomalyDeg, 1));
     navUpdate({ fpaDeg: t.flightPathAngleDeg, nuDeg: t.trueAnomalyDeg, active: !fixed && t.status !== 'impacted' });
-    if (Number.isFinite(t.fuelKg) && Number.isFinite(t.maxFuelKg) && t.maxFuelKg > 0) {
-      fuelSlot.set(`${fmtNumber(t.fuelKg, 1)} / ${fmtNumber(t.maxFuelKg)} kg`);
-      const pct = Math.max(0, Math.min(1, t.fuelKg / t.maxFuelKg));
-      if (Math.abs(pct - lastFuelPct) > 0.001) {
-        lastFuelPct = pct;
-        fuelFill.style.transform = `scaleX(${pct.toFixed(4)})`;
-        fuelWrap.dataset.level = pct < 0.05 ? 'danger' : pct < 0.2 ? 'warn' : 'ok';
-        setAttr(fuelTrack, 'aria-valuenow', Math.round(pct * 100));
+
+    if (state.canFly) {
+      if (Number.isFinite(t.fuelKg) && Number.isFinite(t.maxFuelKg) && t.maxFuelKg > 0) {
+        fuelSlot.set(`${fmtNumber(t.fuelKg, t.fuelKg < 100 ? 1 : 0)} / ${fmtNumber(t.maxFuelKg)} kg`);
+        const pct = Math.max(0, Math.min(1, t.fuelKg / t.maxFuelKg));
+        if (Math.abs(pct - lastFuelPct) > 0.001) {
+          lastFuelPct = pct;
+          fuelFill.style.transform = `scaleX(${pct.toFixed(4)})`;
+          fuelWrap.dataset.level = pct < 0.05 ? 'danger' : pct < 0.2 ? 'warn' : 'ok';
+          setAttr(fuelTrack, 'aria-valuenow', Math.round(pct * 100));
+        }
+      } else fuelSlot.set('—');
+      dvSlot.set(Number.isFinite(t.dvRemainingMs) ? `${fmtNumber(t.dvRemainingMs)} m/s` : '—');
+      if (Number.isFinite(t.deltaVUsedMs)) dvUsedSlot.set(fmtDeltaV(t.deltaVUsedMs));
+      if (t.thrustN !== lastThrustN && !(Number.isNaN(t.thrustN) && Number.isNaN(lastThrustN))) {
+        lastThrustN = Number(t.thrustN);
+        updateThrottleLabel();
       }
-    } else {
-      fuelSlot.set('— / — kg');
+      if (++apTick % 5 === 0 || apTick === 1) updateAutopilotHelp(); // ~2 Hz is plenty for estimates
     }
-    dvSlot.set(`Δv: ${Number.isFinite(t.dvRemainingMs) ? fmtNumber(t.dvRemainingMs) : '—'} m/s`);
-    if (Number.isFinite(t.deltaVUsedMs)) dvUsedSlot.set(fmtDeltaV(t.deltaVUsedMs));
-    if (t.thrustN !== lastThrustN && !(Number.isNaN(t.thrustN) && Number.isNaN(lastThrustN))) {
-      lastThrustN = Number(t.thrustN);
-      updateThrottleLabel();
-    }
-    state.telemetryId = id;
   }
 
-  const isFiring = () => state.pointerBurns.size > 0 || state.mainBurns.size > 0;
   let navLast = { fpaDeg: 0, nuDeg: 0, active: false };
   function navUpdate(o = {}) {
     for (const k of ['fpaDeg', 'nuDeg', 'active']) if (o[k] !== undefined) navLast[k] = o[k];
     navball.set({ ...navLast, firing: isFiring() });
   }
-  const updateNavFiring = () => navUpdate();
 
   function setThrusting(dirs) {
     const next = new Set(Array.isArray(dirs) ? dirs : dirs instanceof Set ? [...dirs] : []);
@@ -834,7 +1000,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     state.mainBurns = next;
     for (const d of all) refreshFiring(d);
     toggleClass(deck, 'is-firing', isFiring());
-    updateNavFiring();
+    navUpdate();
   }
 
   function setCameraMode(mode) {
@@ -873,9 +1039,9 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     if (!el) {
       el = h('div', { id: 'loader', class: 'loader' },
         h('div', { class: 'loader__card' },
-          h('div', { class: 'loader__brand' }, h('span', { class: 'brand-dot' }), h('span', { class: 'brand-title', text: 'SATALITTE // ORBITAL-OS' })),
+          h('div', { class: 'loader__brand' }, h('span', { class: 'brand__logo', html: icons.logo }), h('span', { class: 'loader__name', text: 'Satalitte Physics' })),
           h('div', { class: 'loader__bar', role: 'progressbar', 'aria-label': 'Loading', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, h('span', { class: 'loader__fill' })),
-          h('p', { class: 'loader__label', text: 'INITIALISING…' })));
+          h('p', { class: 'loader__label', text: 'Loading…' })));
       document.body.append(el);
     }
     return el;
@@ -894,7 +1060,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     const el = document.getElementById('loader');
     if (!el || el.hidden) return;
     el.classList.add('is-hidden');
-    setTimeout(() => { el.hidden = true; }, prefersReducedMotion() ? 0 : 650);
+    setTimeout(() => { el.hidden = true; }, prefersReducedMotion() ? 0 : 260);
   }
   function showFatal(message) {
     hideLoading();
@@ -903,16 +1069,15 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     const msg = String(message ?? 'Unknown error');
     const isGL = /webgl|gpu|graphics/i.test(msg);
     el.replaceChildren(h('div', { class: 'fatal__card', role: 'alert' },
-      h('div', { class: 'fatal__head' }, h('span', { class: 'fatal__icon', html: icons.warning }), h('span', { text: 'SYSTEM FAULT' })),
-      h('h2', { class: 'fatal__title', text: isGL ? '3D graphics are not available' : 'The simulation could not start' }),
+      h('h2', { class: 'fatal__title' }, h('span', { class: 'fatal__icon', html: icons.warning }), isGL ? '3D graphics are not available' : 'The simulation could not start'),
       h('p', { class: 'fatal__msg', text: msg }),
       isGL ? h('ul', { class: 'fatal__tips' },
         h('li', { text: 'Turn on hardware acceleration in your browser settings.' }),
         h('li', { text: 'Update your graphics drivers, or try another browser (Chrome, Firefox, Edge, Safari).' }),
-        h('li', { text: 'On some locked-down machines WebGL is disabled by policy.' })) : null,
+        h('li', { text: 'On some managed computers WebGL is disabled by policy.' })) : null,
       h('div', { class: 'fatal__actions' },
-        h('button', { class: 'btn btn--primary', type: 'button', text: 'RELOAD', onclick: () => location.reload() }),
-        h('a', { class: 'btn', href: LEGACY_URL, text: 'OPEN THE CLASSIC VERSION' }))));
+        h('button', { class: 'btn btn--primary', type: 'button', text: 'Reload', onclick: () => location.reload() }),
+        h('a', { class: 'btn', href: LEGACY_URL, text: 'Open the classic version' }))));
     el.hidden = false;
   }
 
@@ -922,6 +1087,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   setSelection(null);
   setCameraMode('orbit');
   updateThrottleLabel();
+  updateGuide();
 
   return {
     setLoading,
@@ -941,19 +1107,25 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     // extras (not required by the contract, safe to ignore)
     openHelp: (tab) => modal.open(tab),
     closeHelp: () => modal.close(),
+    openSettings: (open = true) => setSettingsOpen(open),
+    showGuide: () => { guideDone = false; store.set('guideDone', false); updateGuide(); },
     refreshSettings: () => {
       settingsUI.refresh();
       const v = Number(settings?.physics?.throttle);
       if (Number.isFinite(v)) { throttle.value = String(v); updateThrottleLabel(); }
     },
-    setTargetAltitude: (km) => { target.value = String(km); targetSlot.set(`${fmtNumber(Number(target.value))} km`); },
+    setTargetAltitude: (km) => {
+      target.value = String(km);
+      state.targetAlt = Number(target.value);
+      targetSlot.set(`${fmtNumber(state.targetAlt)} km`);
+      updateAutopilotHelp();
+    },
     setDrawer,
     element: root,
     destroy() {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('blur', endAllBurns);
       narrowMQ.removeEventListener?.('change', onMQ);
-      wideMQ.removeEventListener?.('change', onMQ);
       navball.destroy(); groundTrack.destroy(); chart.destroy();
       settingsUI.destroy();
       root.replaceChildren();

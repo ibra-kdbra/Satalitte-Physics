@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>HUD test bench · SATALITTE // ORBITAL-OS</title>
+  <title>HUD test bench · Satalitte Physics</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="../../styles/main.css">
   <script type="importmap">
@@ -17,11 +17,9 @@
   </script>
   <style>
     /* stand-in for the WebGL scene */
-    #viewport {
-      background:
-        radial-gradient(circle at 50% 52%, #2a6fb8 0 15%, #123a6b 21%, rgba(70, 150, 255, 0.35) 21.6%, transparent 24%),
-        radial-gradient(120% 90% at 70% 30%, #0b1630 0%, #050a14 55%, #02040a 100%);
-    }
+    /* flat stand-in for the WebGL scene: a planet disc on a dark sky */
+    #viewport { background: #05070b; }
+    #viewport::before { content: ""; position: absolute; left: 50%; top: 50%; width: 300px; height: 300px; margin: -150px 0 0 -150px; border-radius: 50%; background: #1d4f86; }
     .fake-label { position: fixed; z-index: 1; }
   </style>
 </head>
@@ -37,9 +35,9 @@
   <div id="ui"></div>
   <div id="loader" class="loader">
     <div class="loader__card">
-      <div class="loader__brand"><span class="brand-dot" aria-hidden="true"></span><span class="brand-title">SATALITTE // ORBITAL-OS</span></div>
+      <div class="loader__brand"><span class="loader__name">Satalitte Physics</span></div>
       <div class="loader__bar" role="progressbar" aria-label="Loading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span class="loader__fill"></span></div>
-      <p class="loader__label">INITIALISING…</p>
+      <p class="loader__label">Loading…</p>
     </div>
   </div>
 
@@ -106,7 +104,7 @@
     ];
 
     // loading sequence
-    const steps = ['LOADING TEXTURES…', 'BUILDING EARTH…', 'COMPUTING EPHEMERIDES…', 'READY'];
+    const steps = ['Loading textures…', 'Building Earth…', 'Computing ephemerides…', 'Ready'];
     steps.forEach((s, i) => setTimeout(() => hud.setLoading((i + 1) / steps.length, s), 80 * i));
     setTimeout(() => hud.hideLoading(), 400);
 
@@ -153,10 +151,11 @@
       hud.pushHistory({ simTime: sim, altKm: t.altitudeKm, speedKms: t.speedKms, lat: t.latitudeDeg, lon: t.longitudeDeg });
     }, 500);
 
-    if (params.get('alert') !== 'off') hud.setAlert('WARNING: PERIGEE AT 140 KM · RAPID ORBITAL DECAY', params.get('alert') === 'danger' ? 'danger' : 'warn');
+    if (params.get('alert') === 'warn' || params.get('alert') === 'danger') hud.setAlert('Perigee at 140 km: rapid orbital decay', params.get('alert') === 'danger' ? 'danger' : 'warn');
     setTimeout(() => hud.toast('ISS (ZARYA) launched into a 408 km orbit', 'success'), 500);
     setTimeout(() => hud.toast('Time warp limited near periapsis', 'warn'), 650);
     hud.setThrusting(params.get('firing') ? ['prograde'] : []);
+    if (params.get('details')) { document.querySelector('.details-toggle').click(); const tab = document.getElementById('hud-tab-' + params.get('details')); if (tab) tab.click(); }
   </script>
 </body>
 </html>

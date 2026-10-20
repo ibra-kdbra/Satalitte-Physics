@@ -4,21 +4,22 @@
 import { fmtNumber } from './format.js';
 
 const C = {
-  bg: '#040a18',
-  grid: 'rgba(59, 130, 246, 0.16)',
-  gridStrong: 'rgba(0, 229, 255, 0.32)',
-  accent: '#00e5ff',
-  accent2: '#3b82f6',
-  amber: '#f59e0b',
-  amberSoft: '#fbbf24',
-  text: '#e2e8f0',
-  dim: '#94a3b8',
-  sky0: '#1a3d78',
-  sky1: '#0b1f45',
-  ground0: '#5a2d0a',
-  ground1: '#2a1404',
+  bg: '#0b0e13',
+  grid: 'rgba(255, 255, 255, 0.07)',
+  gridStrong: 'rgba(255, 255, 255, 0.16)',
+  accent: '#5ec4dd',
+  series2: '#c9ced6',
+  marker: '#f2f4f7',
+  warn: '#e3a857',
+  text: '#e7eaef',
+  dim: '#8a94a3',
+  sky0: '#2b3f5c',
+  sky1: '#1a2638',
+  ground0: '#4a3828',
+  ground1: '#2a2018',
 };
-const MONO = "'JetBrains Mono', 'Fira Code', 'SFMono-Regular', ui-monospace, Consolas, monospace";
+const MONO = "'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
+const SANS = "'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
 const MIN_INTERVAL = 100; // ms → ≤ 10 Hz
 
 /** Wraps a canvas: handles DPR sizing and throttled redraws. */
@@ -100,7 +101,7 @@ export function createNavball(canvas) {
     ctx.fillRect(0, hy, w, h - hy);
 
     // pitch ladder
-    ctx.font = `600 ${Math.max(8, Math.round(R / 6))}px ${MONO}`;
+    ctx.font = `400 ${Math.max(10, Math.round(R / 6))}px ${MONO}`;
     ctx.textBaseline = 'middle';
     ctx.lineWidth = 1;
     for (let p = -60; p <= 60; p += 10) {
@@ -117,8 +118,8 @@ export function createNavball(canvas) {
       }
     }
     // horizon
-    ctx.strokeStyle = C.accent;
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.lineWidth = 1.25;
     ctx.beginPath(); ctx.moveTo(cx - R, hy); ctx.lineTo(cx + R, hy); ctx.stroke();
     // inner vignette
     g = ctx.createRadialGradient(cx, cy, R * 0.55, cx, cy, R);
@@ -130,7 +131,7 @@ export function createNavball(canvas) {
     // rim ticks (every 30°) and PE / AP marks for the true-anomaly pip
     ctx.save();
     ctx.translate(cx, cy);
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.55)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
     ctx.lineWidth = 1;
     for (let a = 0; a < 360; a += 30) {
       const t = (a * Math.PI) / 180;
@@ -146,14 +147,12 @@ export function createNavball(canvas) {
     ctx.beginPath();
     ctx.arc(cx, cy, R, 0, Math.PI * 2);
     ctx.lineWidth = 2;
-    ctx.strokeStyle = s.firing ? C.amber : 'rgba(0, 229, 255, 0.6)';
-    if (s.firing) { ctx.shadowColor = C.amber; ctx.shadowBlur = 10; }
+    ctx.strokeStyle = s.firing ? C.warn : 'rgba(255, 255, 255, 0.22)';
     ctx.stroke();
-    ctx.shadowBlur = 0;
 
     // fixed prograde reticle (the vehicle's nose points along velocity)
     const rw = R * 0.3;
-    ctx.strokeStyle = C.amberSoft;
+    ctx.strokeStyle = C.marker;
     ctx.lineWidth = 2;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
@@ -164,7 +163,7 @@ export function createNavball(canvas) {
     ctx.lineTo(cx + rw * 0.36, cy);
     ctx.lineTo(cx + rw, cy);
     ctx.stroke();
-    ctx.fillStyle = C.amberSoft;
+    ctx.fillStyle = C.marker;
     ctx.beginPath(); ctx.arc(cx, cy, 1.6, 0, Math.PI * 2); ctx.fill();
 
     if (s.active) {
@@ -172,18 +171,17 @@ export function createNavball(canvas) {
       const t = (s.nu * Math.PI) / 180;
       const pr = R - 4.5;
       ctx.fillStyle = C.accent;
-      ctx.shadowColor = C.accent;
-      ctx.shadowBlur = 6;
-      ctx.beginPath(); ctx.arc(cx + Math.sin(t) * pr, cy - Math.cos(t) * pr, 3.4, 0, Math.PI * 2); ctx.fill();
-      ctx.shadowBlur = 0;
+      ctx.strokeStyle = C.bg;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(cx + Math.sin(t) * pr, cy - Math.cos(t) * pr, 3.6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     } else {
-      ctx.fillStyle = 'rgba(4, 8, 20, 0.62)';
+      ctx.fillStyle = 'rgba(11, 14, 19, 0.66)';
       ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = C.dim;
-      ctx.font = `700 ${Math.max(8, Math.round(R / 5.2))}px ${MONO}`;
+      ctx.font = `500 ${Math.max(11, Math.round(R / 5))}px ${SANS}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('NO SIGNAL', cx, cy + R * 0.42);
+      ctx.fillText('No data', cx, cy + R * 0.42);
     }
   });
   return {
@@ -218,10 +216,10 @@ export function createGroundTrack(canvas, { imageUrl, capacity = 240 } = {}) {
     ctx.fillStyle = C.bg;
     ctx.fillRect(0, 0, w, h);
     if (img) {
-      ctx.globalAlpha = 0.5;
+      ctx.globalAlpha = 0.55;
       ctx.drawImage(img, 0, 0, w, h);
       ctx.globalAlpha = 1;
-      ctx.fillStyle = 'rgba(4, 10, 24, 0.38)';
+      ctx.fillStyle = 'rgba(11, 14, 19, 0.4)';
       ctx.fillRect(0, 0, w, h);
     }
     // graticule every 30°
@@ -240,7 +238,7 @@ export function createGroundTrack(canvas, { imageUrl, capacity = 240 } = {}) {
     ctx.stroke();
 
     if (pts.length > 1) {
-      ctx.lineWidth = 1.6;
+      ctx.lineWidth = 1.75;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.strokeStyle = C.accent;
@@ -274,19 +272,16 @@ export function createGroundTrack(canvas, { imageUrl, capacity = 240 } = {}) {
       const p = pts[pts.length - 1];
       const x = X(p.lon);
       const y = Y(p.lat);
-      ctx.strokeStyle = 'rgba(251, 191, 36, 0.45)';
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.stroke();
-      ctx.fillStyle = C.amberSoft;
-      ctx.shadowColor = C.amber; ctx.shadowBlur = 8;
-      ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill();
-      ctx.shadowBlur = 0;
+      ctx.fillStyle = C.marker;
+      ctx.strokeStyle = C.bg;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     } else {
-      ctx.fillStyle = C.dim;
-      ctx.font = `600 10px ${MONO}`;
+      ctx.fillStyle = C.text;
+      ctx.font = `400 12px ${SANS}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('AWAITING TRACK DATA', w / 2, h / 2 - 12);
+      ctx.fillText('The track appears as the craft moves', w / 2, h / 2);
     }
   });
   return {
@@ -310,9 +305,9 @@ export function createHistoryChart(canvas, { capacity = 90 } = {}) {
   const view = canvasView(canvas, (ctx, w, h) => {
     ctx.fillStyle = C.bg;
     ctx.fillRect(0, 0, w, h);
-    const top = 22;
+    const top = 26;
     const bot = h - 8;
-    ctx.strokeStyle = 'rgba(59, 130, 246, 0.14)';
+    ctx.strokeStyle = C.grid;
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let i = 0; i <= 3; i++) {
@@ -321,16 +316,13 @@ export function createHistoryChart(canvas, { capacity = 90 } = {}) {
     }
     ctx.stroke();
 
-    ctx.font = `700 10px ${MONO}`;
     ctx.textBaseline = 'alphabetic';
     if (alt.length < 2) {
-      ctx.fillStyle = C.accent; ctx.textAlign = 'left'; ctx.fillText('ALT (km)', 8, 14);
-      ctx.fillStyle = C.amber; ctx.textAlign = 'right'; ctx.fillText('VEL (km/s)', w - 8, 14);
-      ctx.fillStyle = C.dim; ctx.textAlign = 'center'; ctx.font = `600 10px ${MONO}`;
-      ctx.fillText('AWAITING TELEMETRY', w / 2, (top + bot) / 2 + 4);
+      ctx.fillStyle = C.text; ctx.textAlign = 'center'; ctx.font = `400 12px ${SANS}`;
+      ctx.fillText('History appears after a few seconds', w / 2, (top + bot) / 2 + 4);
       return;
     }
-    const series = (arr, color, fill, width) => {
+    const series = (arr, color, fill, width, dash = null) => {
       let mn = Infinity; let mx = -Infinity;
       for (const v of arr) { if (v < mn) mn = v; if (v > mx) mx = v; }
       const pad = Math.max((mx - mn) * 0.12, Math.abs(mx) * 1e-4, 1e-6);
@@ -345,7 +337,7 @@ export function createHistoryChart(canvas, { capacity = 90 } = {}) {
         ctx.save();
         ctx.lineTo(x(n - 1), bot); ctx.lineTo(x(0), bot); ctx.closePath();
         const g = ctx.createLinearGradient(0, top, 0, bot);
-        g.addColorStop(0, 'rgba(0, 229, 255, 0.22)'); g.addColorStop(1, 'rgba(0, 229, 255, 0)');
+        g.addColorStop(0, 'rgba(94, 196, 221, 0.16)'); g.addColorStop(1, 'rgba(94, 196, 221, 0)');
         ctx.fillStyle = g; ctx.fill();
         ctx.restore();
         ctx.beginPath();
@@ -353,24 +345,27 @@ export function createHistoryChart(canvas, { capacity = 90 } = {}) {
         for (let i = 1; i < n; i++) ctx.lineTo(x(i), y(arr[i]));
       }
       ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = 'round';
+      if (dash) ctx.setLineDash(dash);
       ctx.stroke();
+      ctx.setLineDash([]);
       ctx.fillStyle = color;
       ctx.beginPath(); ctx.arc(x(n - 1), y(arr[n - 1]), 2.6, 0, Math.PI * 2); ctx.fill();
       return { mn: mn + pad, mx: mx - pad };
     };
-    const a = series(alt, C.accent, true, 1.6);
-    series(spd, C.amber, false, 1.4);
+    const a = series(alt, C.accent, true, 1.75);
+    const v = series(spd, C.series2, false, 1.25, [4, 3]);
     const la = alt[alt.length - 1];
     const ls = spd[spd.length - 1];
-    ctx.font = `700 10px ${MONO}`;
+    ctx.font = `500 12px ${MONO}`;
     ctx.fillStyle = C.accent; ctx.textAlign = 'left';
-    ctx.fillText(`ALT ${fmtNumber(la, la < 1000 ? 1 : 0)} km`, 8, 14);
-    ctx.fillStyle = C.amber; ctx.textAlign = 'right';
-    ctx.fillText(`VEL ${fmtNumber(ls, 3)} km/s`, w - 8, 14);
-    ctx.font = `500 9px ${MONO}`;
-    ctx.fillStyle = 'rgba(148, 163, 184, 0.8)'; ctx.textAlign = 'left';
-    ctx.fillText(`▲ ${fmtNumber(a.mx, a.mx < 1000 ? 1 : 0)}`, 8, top + 11);
-    ctx.fillText(`▼ ${fmtNumber(a.mn, a.mn < 1000 ? 1 : 0)}`, 8, bot - 3);
+    ctx.fillText(`${fmtNumber(la, la < 1000 ? 1 : 0)} km`, 8, 15);
+    ctx.fillStyle = C.series2; ctx.textAlign = 'right';
+    ctx.fillText(`${fmtNumber(ls, 3)} km/s`, w - 8, 15);
+    ctx.font = `400 11px ${MONO}`;
+    ctx.fillStyle = C.dim; ctx.textAlign = 'left';
+    ctx.fillText(`max ${fmtNumber(a.mx, a.mx < 1000 ? 1 : 0)}`, 8, top + 12);
+    ctx.fillText(`min ${fmtNumber(a.mn, a.mn < 1000 ? 1 : 0)}`, 8, bot - 4);
+    void v;
   });
   return {
     push(altKm, speedKms) {

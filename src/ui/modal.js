@@ -49,7 +49,7 @@ const CONTROLS = `
       <dt>${kbd('?')}</dt><dd>Show this help</dd>
       <dt>${kbd('Esc')}</dt><dd>Close dialogs and drawers</dd>
     </dl>
-    <p class="help-note">Thrusters fire only while a key or a flight-deck button is held, and every second of burn uses propellant. Set the thrust with the <em>throttle</em> slider in the flight deck.</p>
+    <p class="help-note">Thrusters fire only while a key or a flight-deck button is held, and every second of burn uses propellant. Set the thrust with the <em>throttle</em> slider in the flight controls, which appear when a spacecraft is selected. Graphics and physics options are under the settings button in the top bar.</p>
   </section>
 </div>`;
 
@@ -138,7 +138,7 @@ const linksHTML = () => `<div class="link-groups">${LINKS.map(([title, items]) =
 
 const ABOUT = `
 <div class="prose about">
-  <div class="about-hero">${icons.logo}<div><strong>SATALITTE // ORBITAL-OS</strong><span>Satalitte Physics v2 · Earth–Moon orbital mechanics sandbox</span></div></div>
+  <div class="about-hero">${icons.logo}<div><strong>Satalitte Physics</strong><span>Version 2 · an Earth–Moon orbital mechanics sandbox</span></div></div>
   <p>An educational sandbox for satellite physics: launch spacecraft, watch gravity bend their paths, feel the
   atmosphere drag them down and burn your way to the Moon. The original version was built in 2021 with an early
   three.js; v2 rewrites it with a real Earth–Moon system, J2, drag and a symplectic integrator.</p>
@@ -209,7 +209,7 @@ export function createHelpModal(host) {
   const closeBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Close help', html: icons.close, onclick: () => close() });
   const dialog = h('div', { class: 'modal__dialog glass', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId },
     h('header', { class: 'modal__head' },
-      h('div', { class: 'modal__title' }, h('span', { class: 'modal__logo', html: icons.logo }), h('h2', { id: titleId, text: 'SATALITTE // MISSION MANUAL' })),
+      h('div', { class: 'modal__title' }, h('span', { class: 'modal__logo', html: icons.logo }), h('h2', { id: titleId, text: 'Help' })),
       closeBtn),
     tablist,
     panels,

@@ -18,6 +18,47 @@ import { getSpriteTexture } from './textures.js';
 const TRUE_SCALE = 1e-5;       // render units per model unit (1 unit ≈ 10 m, ~2-3x real size)
 const MIN_PX = { satellite: 12, probe: 12, debris: 7 };
 const SELECTED_MIN_PX = 15;
+const MARKER_PX = { satellite: 15, probe: 15, debris: 10 }; // screen-space marker when far away
+const RING_PX = 28;            // selection ring diameter in pixels
+
+// Crisp, non-glowing sprite textures (normal blending): a filled disc with a dark
+// outline for the far-away marker, and a thin ring for the selection.
+const crispCache = new Map();
+function crispTexture(kind) {
+  if (crispCache.has(kind)) return crispCache.get(kind);
+  const n = 64;
+  const data = new Uint8Array(n * n * 4);
+  const aa = 1.5 / n; // ~1.5 texel anti-aliasing band
+  const band = (r, a, b) => Math.min(Math.max((r - a) / aa + 0.5, 0), 1) * Math.min(Math.max((b - r) / aa + 0.5, 0), 1);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const u = ((x + 0.5) / n) * 2 - 1;
+      const v = ((y + 0.5) / n) * 2 - 1;
+      const r = Math.hypot(u, v);
+      let lum;
+      let alpha;
+      if (kind === 'marker') {
+        const fill = band(r, -1, 0.66);
+        const edge = band(r, 0.66, 0.92);
+        alpha = Math.min(1, fill + edge * 0.85);
+        lum = fill > 0 ? 255 * (fill / Math.max(alpha, 1e-3)) : 0;
+      } else {
+        alpha = band(r, 0.84, 0.94);
+        lum = 255;
+      }
+      const i = (y * n + x) * 4;
+      data[i] = data[i + 1] = data[i + 2] = Math.round(lum);
+      data[i + 3] = Math.round(alpha * 255);
+    }
+  }
+  const t = new DataTexture(data, n, n, RGBAFormat);
+  t.magFilter = LinearFilter;
+  t.minFilter = LinearMipmapLinearFilter;
+  t.generateMipmaps = true;
+  t.needsUpdate = true;
+  crispCache.set(kind, t);
+  return t;
+}
 const REF_VIEWPORT_H = 900;    // used when no viewportHeight is given
 
 // ---------------------------------------------------------------------------
@@ -243,13 +284,15 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
   object.name = 'Spacecraft';
   object.add(model);
 
-  // Far-away halo: soft coloured glow so the craft reads as a dot on any background.
-  const haloMat = new SpriteMaterial({ map: getSpriteTexture('glow'), color: accent, blending: AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.5 });
+  // Far away the craft is drawn as a crisp coloured disc of constant pixel size
+  // (legible at any zoom, no glow); up close the model itself takes over.
+  const haloMat = new SpriteMaterial({ map: crispTexture('marker'), color: accent, depthWrite: false, transparent: true, opacity: 1 });
   const halo = new Sprite(haloMat);
-  halo.scale.setScalar(span * 1.5);
+  halo.renderOrder = 5;
   object.add(halo);
 
-  const ringMat = new SpriteMaterial({ map: getSpriteTexture('ring'), color: accent, blending: AdditiveBlending, depthWrite: false, depthTest: false, transparent: true });
+  // Selection: thin neutral ring, constant pixel size, drawn on top.
+  const ringMat = new SpriteMaterial({ map: crispTexture('ring'), color: 0xffffff, depthWrite: false, depthTest: false, transparent: true, opacity: 0.9 });
   const ring = new Sprite(ringMat);
   ring.scale.setScalar(span * 1.9);
   ring.visible = false;
@@ -308,6 +351,7 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
 
     // Size: true-ish scale up close, never smaller than MIN_PX pixels.
     let far = 1;
+    let pxLocal = 0; // one screen pixel in the object's local units
     if (camera) {
       const d = camera.position.distanceTo(object.position);
       const fov = (camera.fov || 45) * Math.PI / 180;
@@ -316,11 +360,15 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
       const minPx = selected ? SELECTED_MIN_PX : MIN_PX[kind] || 12;
       const minSpan = minPx * worldPerPx;
       const trueSpan = span * TRUE_SCALE;
-      object.scale.setScalar(Math.max(trueSpan, minSpan) / span);
+      const sc = Math.max(trueSpan, minSpan) / span;
+      object.scale.setScalar(sc);
       far = Math.min(1, Math.max(0, (minSpan / trueSpan - 1) / 2)); // 0 when at true scale
+      pxLocal = worldPerPx / sc;
     }
     halo.visible = far > 0.01;
-    haloMat.opacity = 0.45 * far;
+    haloMat.opacity = Math.min(1, far * 2);
+    if (pxLocal > 0) halo.scale.setScalar((MARKER_PX[kind] || 15) * pxLocal);
+    else halo.scale.setScalar(span * 1.2);
 
     const now = performance.now() * 0.001;
     const heat = Math.min(1, Math.max(0, heating));
@@ -341,14 +389,13 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
 
     selectedState = !!selected;
     ring.visible = selectedState;
-    if (selectedState) ringMat.opacity = 0.75 + 0.25 * Math.sin(now * 4);
+    if (selectedState) ring.scale.setScalar(pxLocal > 0 ? Math.max(RING_PX * pxLocal, span * 1.6) : span * 1.9);
   }
 
   function setColor(hex) {
     accent.set(hex);
     accentMat.color.copy(accent);
     haloMat.color.copy(accent);
-    ringMat.color.copy(accent);
   }
 
   function dispose() {

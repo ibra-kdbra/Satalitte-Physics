@@ -14,7 +14,7 @@ const SPEC = {
       ['trails', 'Trails', null, 'Fading line behind each object showing where it has been.'],
       ['trailLength', 'Trail length', { min: 100, max: 4000, step: 100 }, 'Number of points kept per trail (100–4000).'],
       ['orbits', 'Predicted orbits', null, 'Keplerian path predicted for each object.'],
-      ['markers', 'PE / AP / AN / DN', null, 'Periapsis, apoapsis and node markers on the selected orbit.'],
+      ['markers', 'Orbit markers', null, 'Periapsis, apoapsis and node markers on the selected orbit.'],
       ['targetRing', 'Target orbit ring', null, 'Reference ring at the autopilot target altitude.'],
       ['clouds', 'Clouds', null, 'Drifting cloud layer.'],
       ['atmosphere', 'Atmosphere glow', null, 'Blue limb and sunset-coloured terminator.'],
