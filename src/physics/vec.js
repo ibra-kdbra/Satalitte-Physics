@@ -9,8 +9,13 @@ export const sub = (out, a, b) => set(out, a[0] - b[0], a[1] - b[1], a[2] - b[2]
 export const scale = (out, a, s) => set(out, a[0] * s, a[1] * s, a[2] * s);
 export const addScaled = (out, a, b, s) => set(out, a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s);
 export const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-export const len = (a) => Math.hypot(a[0], a[1], a[2]);
-export const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+// Math.sqrt of the sum rather than Math.hypot: V8 boxes hypot's result in a new
+// heap number on every call, which made the integrator allocate ~3 MB per frame.
+export const len = (a) => Math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+export const dist = (a, b) => {
+  const x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+  return Math.sqrt(x * x + y * y + z * z);
+};
 export const cross = (out, a, b) => set(out,
   a[1] * b[2] - a[2] * b[1],
   a[2] * b[0] - a[0] * b[2],

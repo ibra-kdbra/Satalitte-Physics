@@ -16,6 +16,6 @@ export function density(altitudeKm) {
   if (altitudeKm <= 0) return TABLE[0][1];
   let i = TABLE.length - 1;
   while (TABLE[i][0] > altitudeKm) i--;
-  const [h0, rho0, H] = TABLE[i];
-  return rho0 * Math.exp(-(altitudeKm - h0) / H);
+  const row = TABLE[i]; // indexed, not destructured: destructuring allocates an iterator per call
+  return row[1] * Math.exp(-(altitudeKm - row[0]) / row[2]);
 }

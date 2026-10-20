@@ -44,6 +44,8 @@ const MAX_STEP = 600;            // s
 const MIN_STEP = 0.05;           // s
 const EVAL_BUDGET = 60000;       // force evaluations per frame before warp is throttled
 const MAX_ITER = 6000;           // steps per satellite per frame, hard limit
+// Slots of each satellite's per-step scratch array (sat._h).
+const H_DRAG = 0, H_HEAT = 1, H_THRUST = 2;
 const DEFAULT_BALLISTIC = 0.01;  // Cd·A/m in m²/kg (small satellite)
 const THRUST_MAX_WARP = 10;      // time warp is capped while an engine is firing
 const G0 = 9.80665;              // m/s², for specific impulse
@@ -158,6 +160,9 @@ export class Simulation {
       thrust: [],        // held thruster directions, set by setThrust()
       autopilot: null,   // pending second Hohmann burn
       central: 'earth',
+      // Per-step scratch values written inside the integrator. A typed array:
+      // storing doubles in plain object fields boxes them on every write.
+      _h: new Float64Array(3),
     };
     sat.status = this._classify(sat);
     this.satellites.push(sat);
@@ -228,19 +233,19 @@ export class Simulation {
         const rho = density(alt);
         // velocity relative to the co-rotating atmosphere: v − ω × r, ω = (0, Ω, 0)
         const vx = v[0] - OMEGA_EARTH * z, vy = v[1], vz = v[2] + OMEGA_EARTH * x;
-        const vRel = Math.hypot(vx, vy, vz) * 1000; // m/s
+        const vRel = Math.sqrt(vx * vx + vy * vy + vz * vz) * 1000; // m/s
         const aDrag = 0.5 * rho * sat.ballistic * vRel * vRel; // m/s²
         // a = −aDrag·v̂ (m/s²); dividing by vRel in m/s and multiplying the km/s
         // components yields km/s² directly.
         const s = vRel > 0 ? -aDrag / vRel : 0;
         out[0] += s * vx; out[1] += s * vy; out[2] += s * vz;
-        sat._aDrag = aDrag;
-        sat._q = 0.5 * rho * vRel * vRel * vRel; // stagnation heat-flux proxy, W/m²
+        sat._h[H_DRAG] = aDrag;
+        sat._h[H_HEAT] = 0.5 * rho * vRel * vRel * vRel; // stagnation heat-flux proxy, W/m²
       } else {
-        sat._aDrag = 0; sat._q = 0;
+        sat._h[H_DRAG] = 0; sat._h[H_HEAT] = 0;
       }
     } else {
-      sat._aDrag = 0; sat._q = 0;
+      sat._h[H_DRAG] = 0; sat._h[H_HEAT] = 0;
     }
 
     if (sat._thrusting) this._thrustAccel(out, r, v, t, sat);
@@ -263,7 +268,7 @@ export class Simulation {
     }
     const l = len(dir);
     if (l < 1e-9) return;
-    addScaled(out, out, dir, sat._thrustA / l); // km/s², set per step in _advance
+    addScaled(out, out, dir, sat._h[H_THRUST] / l); // km/s², set per step in _advance
     scale(sat.thrustDirWorld, dir, 1 / l);
   }
 
@@ -275,10 +280,11 @@ export class Simulation {
       const dm = dist(sat.pos, this._moonFast(t, this._m));
       dt = Math.min(dt, ETA * Math.sqrt((dm * dm * dm) / MU_MOON));
     }
-    if (sat._aDrag > 1e-4) {
+    const aDrag = sat._h[H_DRAG];
+    if (aDrag > 1e-4) {
       // keep each step's drag Δv below ~0.5 % of the speed
       const v = len(sat.vel) * 1000;
-      dt = Math.min(dt, (0.005 * v) / sat._aDrag);
+      dt = Math.min(dt, (0.005 * v) / aDrag);
     }
     return Math.max(MIN_STEP, Math.min(MAX_STEP, dt));
   }
@@ -345,7 +351,7 @@ export class Simulation {
         F = sat.thrustN * this.physics.throttle / 100;
         mdot = F / (sat.isp * G0);
         h = Math.min(h, sat.fuel / mdot);
-        sat._thrustA = F / (sat.dryMass + sat.fuel - 0.5 * mdot * h) / 1000; // km/s²
+        sat._h[H_THRUST] = F / (sat.dryMass + sat.fuel - 0.5 * mdot * h) / 1000; // km/s²
       }
       // Land a step exactly on the scheduled autopilot burn.
       if (sat.autopilot && sat.autopilot.fireAt - t > 1e-6) h = Math.min(h, sat.autopilot.fireAt - t);
@@ -353,10 +359,10 @@ export class Simulation {
       const tPrev = t;
       this._yoshida(sat, t, h);
       t += h;
-      if (sat._q > peakHeat) peakHeat = sat._q;
+      if (sat._h[H_HEAT] > peakHeat) peakHeat = sat._h[H_HEAT];
 
       if (sat._thrusting) {
-        sat.deltaVUsed += sat._thrustA * 1000 * h; // m/s, exactly what was applied
+        sat.deltaVUsed += sat._h[H_THRUST] * 1000 * h; // m/s, exactly what was applied
         sat.fuel -= mdot * h;
         if (sat.fuel <= 1e-9) {
           sat.fuel = 0;
@@ -383,7 +389,7 @@ export class Simulation {
         return;
       }
     }
-    sat.dragAccel = sat._aDrag || 0;
+    sat.dragAccel = sat._h[H_DRAG];
     // Map heat flux to 0..1 glow: ~0.2 at 120 km, ~0.8 at 100 km, 1 below ~90 km at orbital speed.
     sat.heating = Math.min(1, Math.sqrt(peakHeat / 2e5));
   }
