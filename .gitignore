@@ -2,3 +2,5 @@ node_modules/
 .DS_Store
 tests/fixtures/satellites/
 qa-artifacts/
+data/satellites/*.json
+!data/satellites/index.json

@@ -2,11 +2,13 @@
 // public source maintained by Dr T.S. Kelso, and writes compact copies to
 // data/satellites/ so GitHub Pages can serve them to every visitor.
 //
-// Run by .github/workflows/satellites.yml a few times a day. CelesTrak asks
+// Run by .github/workflows/pages.yml before each deployment (every 6 hours and
+// on every push to main); the data is deployed, never committed. CelesTrak asks
 // clients not to download the same data more often than every two hours.
-// A group that fails to download keeps its previous file.
+// A group that fails to download keeps its previous copy: the local file if
+// present, otherwise the one currently deployed (--fallback <base URL>).
 //
-// Usage: node scripts/fetch-satellites.mjs
+// Usage: node scripts/fetch-satellites.mjs [--fallback https://<user>.github.io/<repo>/data/satellites/]
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -45,9 +47,32 @@ async function fetchGroup(g) {
   return records.map(compactOmm);
 }
 
+const fallbackArg = process.argv.indexOf('--fallback');
+const FALLBACK = fallbackArg > 0 ? process.argv[fallbackArg + 1].replace(/\/?$/, '/') : null;
+
 mkdirSync(out, { recursive: true });
 const manifestPath = join(out, 'index.json');
-const previous = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : { groups: [] };
+let previous = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : { groups: [] };
+if (!previous.groups?.length && FALLBACK) {
+  try {
+    const res = await fetch(`${FALLBACK}index.json`);
+    if (res.ok) previous = await res.json();
+  } catch { /* first deployment: nothing to fall back to */ }
+}
+
+/** Copy of a group from the currently deployed site, written locally. */
+async function restore(prev) {
+  if (existsSync(join(out, prev.file))) return true;
+  if (!FALLBACK) return false;
+  try {
+    const res = await fetch(`${FALLBACK}${prev.file}`);
+    if (!res.ok) return false;
+    writeFileSync(join(out, prev.file), await res.text());
+    return true;
+  } catch {
+    return false;
+  }
+}
 const manifest = {
   source: 'CelesTrak GP data (https://celestrak.org), OMM JSON, propagated with SGP4',
   updated: new Date().toISOString(),
@@ -66,7 +91,7 @@ for (const g of GROUPS) {
   } catch (err) {
     failures++;
     console.warn(`${g.id}: kept previous data (${err.message})`);
-    if (prev && existsSync(join(out, file))) manifest.groups.push(prev);
+    if (prev && await restore(prev)) manifest.groups.push(prev);
   }
 }
 
