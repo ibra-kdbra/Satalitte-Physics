@@ -55,4 +55,22 @@ copy(join(nm, 'lil-gui/dist/lil-gui.esm.min.js'), join(out, 'lil-gui/lil-gui.esm
 const guiLicense = ['LICENSE', 'LICENSE.md'].map((f) => join(nm, 'lil-gui', f)).find(existsSync);
 if (guiLicense) copy(guiLicense, join(out, 'lil-gui/LICENSE'));
 
-console.log(`Vendored three core, ${seen.size} addon files and lil-gui into ./vendor`);
+// satellite.js (SGP4): only the entry points we use and their relative imports,
+// skipping the package index (it also loads an optional WebAssembly propagator).
+const satDist = join(nm, 'satellite.js/dist');
+const satSeen = new Set();
+const satQueue = ['io.js', 'propagation.js'];
+while (satQueue.length) {
+  const rel = satQueue.shift();
+  if (satSeen.has(rel)) continue;
+  satSeen.add(rel);
+  copy(join(satDist, rel), join(out, 'satellite.js', rel));
+  const code = readFileSync(join(satDist, rel), 'utf8');
+  for (const m of code.matchAll(/(?:from|import)\s*['"](\.{1,2}\/[^'"]+)['"]/g)) {
+    satQueue.push(join(dirname(rel), m[1]).replace(/\\/g, '/'));
+  }
+}
+const satLicense = ['LICENSE.md', 'LICENSE'].map((f) => join(nm, 'satellite.js', f)).find(existsSync);
+if (satLicense) copy(satLicense, join(out, 'satellite.js/LICENSE'));
+
+console.log(`Vendored three core, ${seen.size} addon files, lil-gui and ${satSeen.size} satellite.js files into ./vendor`);

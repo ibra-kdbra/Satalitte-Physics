@@ -553,7 +553,28 @@ export class Simulation {
       };
     }
     const sat = this.get(id);
-    if (!sat) return null;
+    return sat ? this._craftTelemetry(sat) : null;
+  }
+
+  /**
+   * Telemetry for an object this simulation does not integrate, e.g. a real
+   * satellite propagated with SGP4: same shape as a spacecraft's, with the
+   * propulsion fields blank. `extra` is merged in (NORAD id, element age, …).
+   */
+  stateTelemetry({ id, name, kind = 'real', color = '#ffffff', pos, vel, extra = {} }) {
+    const pseudo = {
+      id, name, kind, color, pos, vel, drag: true, fuel: 0, maxFuel: 0, dryMass: 1, isp: 1, thrustN: 0,
+      createdAt: this.time, autopilot: null, dragAccel: NaN, heating: 0, deltaVUsed: 0,
+    };
+    pseudo.status = this._classify(pseudo);
+    return {
+      ...this._craftTelemetry(pseudo),
+      fuelKg: NaN, maxFuelKg: NaN, dvRemainingMs: NaN, thrustN: NaN, metS: NaN, ageS: NaN, deltaVUsedMs: NaN,
+      ...extra,
+    };
+  }
+
+  _craftTelemetry(sat) {
     const { el, radius, central, r, v, mu } = this.orbitOf(sat);
     const rMag = len(r);
     const altEarth = len(sat.pos) - R_EARTH;
@@ -573,7 +594,7 @@ export class Simulation {
       thrustN: sat.thrustN * this.physics.throttle / 100, metS: this.time - sat.createdAt,
       autopilot: sat.autopilot ? `Circularize at ${sat.autopilot.at === 'apo' ? 'apoapsis' : 'periapsis'}` : null,
       autopilotEtaS: sat.autopilot ? Math.max(0, sat.autopilot.fireAt - this.time) : NaN,
-      id, name: sat.name, kind: sat.kind, color: sat.color,
+      id: sat.id, name: sat.name, kind: sat.kind, color: sat.color,
       centralBody: central === 'moon' ? 'Moon' : 'Earth',
       altitudeKm: rMag - radius,
       speedKms: len(central === 'moon' ? sub(vec(), sat.vel, this.moonVel) : sat.vel),
