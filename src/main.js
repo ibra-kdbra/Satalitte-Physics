@@ -41,13 +41,21 @@ const DEFAULT_SETTINGS = {
   physics: { drag: true, j2: true, moonGravity: true, sunGravity: true, throttle: 100 },
 };
 
+// Valid ranges for numeric settings (stored values are clamped into them).
+const RANGES = { trailLength: [100, 4000], throttle: [5, 100] };
+const TARGET_ALT_RANGE = [200, 35786];
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
 function loadSettings() {
   const s = structuredClone(DEFAULT_SETTINGS);
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
     for (const group of Object.keys(s)) {
       for (const key of Object.keys(s[group])) {
-        if (typeof saved?.[group]?.[key] === typeof s[group][key]) s[group][key] = saved[group][key];
+        const v = saved?.[group]?.[key];
+        if (typeof v !== typeof s[group][key]) continue;
+        if (typeof v === 'number' && !Number.isFinite(v)) continue;
+        s[group][key] = typeof v === 'number' && RANGES[key] ? clamp(v, ...RANGES[key]) : v;
       }
     }
   } catch { /* private mode or corrupt data: defaults */ }
@@ -70,7 +78,7 @@ let paused = false;
 let warpLimited = false;
 let selectedId = null;
 let targetAltKm = 850;
-try { targetAltKm = Number(localStorage.getItem('satalitte-physics:v2:targetAlt')) || 850; } catch { /* ignore */ }
+try { targetAltKm = clamp(Number(localStorage.getItem('satalitte-physics:v2:targetAlt')) || 850, ...TARGET_ALT_RANGE); } catch { /* ignore */ }
 const uiThrust = new Set();
 let lastThrustKey = '';
 const entities = new Map();   // id → { sat, visual, trail, orbit, anchor, label, last }
@@ -262,6 +270,7 @@ function addEntity(sat) {
 function removeEntity(id) {
   const e = entities.get(id);
   if (!e) return;
+  e.anchor.remove(e.label); // CSS2DObject removes its DOM element only when it is removed itself
   view.scene.remove(e.visual.object, e.trail.object, e.orbit.object, e.anchor);
   e.visual.dispose?.(); e.trail.dispose?.(); e.orbit.dispose?.();
   entities.delete(id);
@@ -821,7 +830,7 @@ function handlers() {
       refreshBodies();
     },
     onTargetAltitude: (km) => {
-      targetAltKm = Number(km) || targetAltKm;
+      targetAltKm = clamp(Number(km) || targetAltKm, ...TARGET_ALT_RANGE);
       try { localStorage.setItem('satalitte-physics:v2:targetAlt', String(targetAltKm)); } catch { /* ignore */ }
     },
     onCameraMode: (mode) => setCameraMode(mode),

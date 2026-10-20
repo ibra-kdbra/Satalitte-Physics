@@ -12,7 +12,8 @@
   "scripts": {
     "vendor": "node scripts/vendor.mjs",
     "serve": "python3 -m http.server 8080",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "qa": "node tests/e2e/qa.mjs"
   },
   "devDependencies": {
     "lil-gui": "0.21.0",

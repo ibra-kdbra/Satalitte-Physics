@@ -37,7 +37,7 @@ the ORBITAL-OS prototype at [`legacy/orbital-os.html`](legacy/orbital-os.html).
 | `Tab` | Cycle through objects |
 | `C` | Camera mode: follow → chase → nadir |
 | `O` `T` `L` | Toggle orbit predictions, trails, labels |
-| `Delete` | Remove the selected spacecraft |
+| `Delete` / `Backspace` | Remove the selected spacecraft |
 | `?` | Help |
 
 Presets include the ISS, Hubble, a sun-synchronous imager, an 18-satellite

@@ -166,8 +166,10 @@ export function lunarTransfer(sim, { parkingAltKm = 200, missKm = 0 } = {}) {
 export function customLaunch({ altitudeKm = 400, speedFactor = 1, inclinationDeg = 30, eccentricity = 0 } = {}) {
   const r = R_EARTH + Math.max(0, altitudeKm);
   const e = Math.max(0, Math.min(0.99, eccentricity || 0));
-  const base = Math.sqrt((MU_EARTH * (1 + e)) / r);
+  // With an eccentricity the periapsis speed is fully defined by vis-viva;
+  // speedFactor only scales the circular speed when no eccentricity is given.
+  const base = e > 0 ? Math.sqrt((MU_EARTH * (1 + e)) / r) : Math.sqrt(MU_EARTH / r) * speedFactor;
   const s = stateFromElements({ a: r, e: 0, i: inclinationDeg * DEG, raan: rand(0, 360) * DEG, nu: rand(0, 360) * DEG }, MU_EARTH);
-  const vel = scale(vec(), normalize(vec(), s.vel), base * speedFactor);
+  const vel = scale(vec(), normalize(vec(), s.vel), base);
   return { name: `Custom ${Math.round(altitudeKm)} km`, color: nextColor(), kind: 'satellite', pos: s.pos, vel };
 }

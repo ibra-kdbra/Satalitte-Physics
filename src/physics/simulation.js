@@ -563,7 +563,7 @@ export class Simulation {
    */
   stateTelemetry({ id, name, kind = 'real', color = '#ffffff', pos, vel, extra = {} }) {
     const pseudo = {
-      id, name, kind, color, pos, vel, drag: true, fuel: 0, maxFuel: 0, dryMass: 1, isp: 1, thrustN: 0,
+      id, name, kind, color, pos, vel, alive: true, drag: true, fuel: 0, maxFuel: 0, dryMass: 1, isp: 1, thrustN: 0,
       createdAt: this.time, autopilot: null, dragAccel: NaN, heating: 0, deltaVUsed: 0,
     };
     pseudo.status = this._classify(pseudo);
@@ -575,6 +575,17 @@ export class Simulation {
   }
 
   _craftTelemetry(sat) {
+    const tel = this._craftTelemetryRaw(sat);
+    if (!sat.alive) {
+      // On the ground there is no orbit: blank the orbital figures.
+      for (const k of ['periapsisKm', 'apoapsisKm', 'periodS', 'eccentricity', 'semiMajorAxisKm', 'specificEnergy',
+        'raanDeg', 'argpDeg', 'trueAnomalyDeg', 'flightPathAngleDeg']) tel[k] = NaN;
+      tel.speedKms = 0; tel.altitudeKm = 0;
+    }
+    return tel;
+  }
+
+  _craftTelemetryRaw(sat) {
     const { el, radius, central, r, v, mu } = this.orbitOf(sat);
     const rMag = len(r);
     const altEarth = len(sat.pos) - R_EARTH;

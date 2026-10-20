@@ -261,3 +261,20 @@ test('telemetry orientation angles and environment are consistent', () => {
   assert.ok(t.flightPathAngleDeg > 0, 'climbing after perigee');
   assert.ok(Math.abs(t.escapeVelocityKms - Math.sqrt(2) * t.speedKms) > 0 && t.gravityAccel > 0 && t.j2Accel > 0);
 });
+
+test('custom launch with an eccentricity gives exactly that orbit (speed factor ignored)', () => {
+  const sim = new Simulation({ startDate: START, physics: { drag: false } });
+  const sat = sim.addSatellite(customLaunch({ altitudeKm: 1000, speedFactor: Math.sqrt(1.2), inclinationDeg: 30, eccentricity: 0.2 }));
+  const t = sim.telemetry(sat.id);
+  assert.ok(Math.abs(t.eccentricity - 0.2) < 1e-9, `e ${t.eccentricity}`);
+  assert.ok(Math.abs(t.periapsisKm - 1000) < 1e-6);
+});
+
+test('an impacted craft reports no orbit', () => {
+  const sim = new Simulation({ startDate: START });
+  const sat = sim.addSatellite(PRESETS.find((p) => p.id === 'reentry').create(sim)[0]);
+  for (let k = 0; k < 2000 && sat.alive; k++) sim.step(0.1, 50);
+  const t = sim.telemetry(sat.id);
+  assert.equal(t.status, 'impacted');
+  assert.ok(Number.isNaN(t.periapsisKm) && Number.isNaN(t.periodS) && t.speedKms === 0);
+});

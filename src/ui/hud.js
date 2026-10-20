@@ -557,7 +557,10 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     updateGuide();
   });
   function updateGuide() {
-    guide.hidden = guideDone || !!state.canFly;
+    guide.hidden = guideDone;
+    // Both sit at the bottom centre: stack the guide above the flight deck when it is open.
+    const deckH = deck.hidden ? 0 : deck.offsetHeight;
+    guide.style.bottom = deckH ? `calc(var(--gutter) * 2 + ${deckH}px)` : '';
     root.style.setProperty('--guide-h', `${guide.hidden ? 0 : guide.offsetHeight}px`);
   }
 
@@ -703,6 +706,11 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     }
   };
   window.addEventListener('keydown', onKey);
+  // Settings controls stop key events from bubbling, so Esc is caught on the way down.
+  const onEscCapture = (e) => {
+    if (e.key === 'Escape' && !settingsPop.hidden) { e.stopPropagation(); setSettingsOpen(false); gearBtn.focus(); }
+  };
+  window.addEventListener('keydown', onEscCapture, true);
 
   // ================================================================ toasts
   const TOAST_ICON = { info: icons.info, success: icons.check, warn: icons.warning, danger: icons.danger };
@@ -1165,6 +1173,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     element: root,
     destroy() {
       window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keydown', onEscCapture, true);
       window.removeEventListener('blur', endAllBurns);
       narrowMQ.removeEventListener?.('change', onMQ);
       navball.destroy(); groundTrack.destroy(); chart.destroy();
