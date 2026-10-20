@@ -596,6 +596,85 @@ input.num:disabled { opacity: 0.4; }
 .tip__icon .icon { width: 15px; height: 15px; }
 .tip strong { color: var(--text); font-weight: 500; }
 
+/* ============================================== right panel: two views */
+.panel--views .panel__head { min-height: 32px; }
+.viewtabs { display: flex; gap: var(--s4); }
+.viewtab {
+  position: relative;
+  padding: 2px 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font: 600 var(--fs-title)/1.25 var(--font-sans);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  transition: color var(--t-fast) var(--ease);
+}
+.viewtab:hover { color: var(--text-2); }
+.viewtab[aria-selected="true"] { color: var(--text); }
+.viewtab[aria-selected="true"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; border-radius: 1px; background: var(--accent); }
+.viewtab:focus-visible { outline-offset: 2px; }
+
+/* ======================================================== real satellites */
+.catalog { display: flex; flex-direction: column; gap: var(--s3); }
+.catalog__intro { margin: 0; color: var(--text-2); font-size: var(--fs-meta); }
+.search { display: flex; flex-direction: column; gap: 6px; }
+.search__label { font-size: var(--fs-body); color: var(--text-2); }
+.search__input {
+  height: 34px;
+  padding: 0 var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: 400 var(--fs-body)/1 var(--font-sans);
+  transition: border-color var(--t-fast) var(--ease);
+}
+.search__input::placeholder { color: var(--text-3); }
+.search__input:hover { border-color: rgba(255, 255, 255, 0.26); }
+.search__input:focus-visible { outline-offset: 0; border-color: var(--accent); }
+.search__hint { margin: 0; font-size: var(--fs-meta); color: var(--text-3); }
+.results-wrap { display: flex; flex-direction: column; gap: var(--s1); }
+.results__note { margin: 0; font-size: var(--fs-meta); color: var(--text-2); }
+.results { list-style: none; margin: 0 calc(var(--s2) * -1); padding: 0; }
+.result {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: "dot name" ". meta";
+  column-gap: var(--s2);
+  align-items: center;
+  width: 100%;
+  padding: 6px var(--s2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  transition: background-color var(--t-fast) var(--ease);
+}
+.result:hover { background: var(--hover); }
+.result:active { background: var(--press); }
+.result .swatch { grid-area: dot; width: 8px; height: 8px; }
+.result__name { grid-area: name; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result__meta { grid-area: meta; font-size: var(--fs-meta); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catgroups { list-style: none; margin: 0 calc(var(--s2) * -1); padding: 0; }
+.catgroup { display: flex; align-items: center; gap: var(--s2); padding-right: var(--s2); border-radius: var(--radius-sm); transition: background-color var(--t-fast) var(--ease); }
+.catgroup:hover { background: var(--hover); }
+.catgroup__main { display: grid; grid-template-columns: auto 1fr auto; grid-template-areas: "dot name count" ". state state"; column-gap: var(--s3); align-items: center; flex: 1; min-width: 0; min-height: 36px; padding: 6px var(--s2); cursor: pointer; }
+.catgroup .swatch { grid-area: dot; }
+.catgroup:not(.is-on) .swatch { opacity: 0.45; }
+.catgroup__name { grid-area: name; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catgroup:not(.is-on) .catgroup__name { color: var(--text-2); font-weight: 400; }
+.catgroup__count { grid-area: count; font-size: var(--fs-meta); color: var(--text-3); }
+.catgroup__state { grid-area: state; font-size: var(--fs-meta); color: var(--text-2); }
+.catgroup__state[data-kind="error"] { color: var(--danger); }
+.source { margin: 0; padding-top: var(--s3); border-top: 1px solid var(--line); font-size: var(--fs-meta); color: var(--text-3); }
+
+.real { display: flex; flex-direction: column; gap: var(--s3); }
+.real-age { margin: 0; font-size: var(--fs-meta); color: var(--text-2); }
+.real-age.is-stale { color: var(--warn); }
+.real__action { display: flex; flex-direction: column; gap: 6px; }
+.real__help { margin: 0; font-size: var(--fs-meta); color: var(--text-2); }
+
 /* ======================================================= settings popover */
 .popover {
   position: fixed;

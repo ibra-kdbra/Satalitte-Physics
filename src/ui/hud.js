@@ -22,11 +22,14 @@ import { createHelpModal } from './modal.js';
 import { createLaunchPanel } from './launch.js';
 import { createSettings } from './settings.js';
 import { createNavball, createGroundTrack, createHistoryChart } from './instruments.js';
+import { createCatalogPanel, fmtAge } from './catalog.js';
 
 const REPO_URL = 'https://github.com/ibra-kdbra/Satalitte-Physics';
 const LEGACY_URL = './legacy/index.html';
 const DEFAULT_MAP = './assets/textures/earth_day_2048.jpg';
 const FIXED_BODIES = new Set(['earth', 'moon']);
+const isReal = (id) => typeof id === 'string' && id.startsWith('cat:');
+const STALE_ELEMENTS_S = 3 * 86400;
 const DEFAULT_WARP_STEPS = [1, 10, 60, 600, 3600, 21600, 86400];
 const MAX_TOASTS = 4;
 const TRACK_POINTS = 240;
@@ -37,7 +40,7 @@ const BODY = {
 };
 
 const STATUS_LABEL = { orbiting: 'Orbiting', suborbital: 'Suborbital', escaping: 'Escaping', impacted: 'Impacted' };
-const KIND_LABEL = { satellite: 'Satellite', probe: 'Probe', debris: 'Debris', planet: 'Planet', moon: 'Moon', star: 'Star' };
+const KIND_LABEL = { real: 'Real satellite', satellite: 'Satellite', probe: 'Probe', debris: 'Debris', planet: 'Planet', moon: 'Moon', star: 'Star' };
 const kindLabel = (k) => KIND_LABEL[k] || (k ? k[0].toUpperCase() + k.slice(1) : 'Object');
 
 // Thruster pad, in the prototype's layout: row 1 = W Q A, row 2 = S E D.
@@ -136,7 +139,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   });
   const rightToggle = h('button', {
     class: 'icon-btn drawer-toggle', type: 'button', 'aria-controls': 'hud-right', 'aria-expanded': 'false',
-    'aria-label': 'Launch', title: 'Launch', html: icons.rocket,
+    'aria-label': 'Launch and real satellites', title: 'Launch and real satellites', html: icons.rocket,
   });
   const helpBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Help (?)', title: 'Help (?)', 'aria-haspopup': 'dialog', html: icons.help });
   const gearBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Settings', title: 'Settings', 'aria-expanded': 'false', 'aria-controls': 'hud-settings', html: icons.sliders });
@@ -256,6 +259,16 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   const apFact = h('span', { class: 'fact fact--ap', hidden: true, title: 'Pending autopilot burn' }, h('span', { html: icons.timer }), apSlot.node);
   const facts = h('p', { class: 'facts' }, lightFact, apFact);
 
+  // real satellites: element age + clone action (instead of the flight deck)
+  const ageSlot = textSlot('');
+  const ageWarnSlot = textSlot('');
+  const ageLine = h('p', { class: 'real-age', title: 'Time between the published orbital elements and the simulation clock' }, ageSlot.node,
+    h('span', { class: 'real-age__warn' }, ageWarnSlot.node));
+  const cloneBtn = h('button', { class: 'btn btn--primary btn--block', type: 'button', html: `${icons.rocket}<span>Clone into sandbox</span>` });
+  const realBlock = h('div', { class: 'real', hidden: true },
+    ageLine,
+    h('div', { class: 'real__action' }, cloneBtn, h('p', { class: 'real__help', text: 'Copy its current orbit into the simulation and fly it.' })));
+
   const statDefs = [
     ['alt', 'Altitude', 'Height above the surface'],
     ['speed', 'Speed', 'Speed relative to the centre of the planet'],
@@ -304,6 +317,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     statusLine,
     statusDetail,
     facts,
+    realBlock,
     statGrid,
     heatRow,
     h('div', { class: 'selcard__foot' }, detailsBtn),
@@ -374,10 +388,40 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     objPanel.el, selPanel.el);
 
   // ============================================================= right dock
-  const launchPanel = panel('launch', 'Launch');
+  // One panel, two views: Launch (sandbox missions) and Real satellites (CelesTrak).
   const launch = createLaunchPanel(handlers, presets);
-  launchPanel.body.append(launch.element);
-  const rightCol = h('aside', { class: 'side-dock side-dock--right', id: 'hud-right', 'aria-label': 'Launch' }, launchPanel.el);
+  const catalog = createCatalogPanel(handlers);
+  const views = [['launch', 'Launch', launch.element], ['real', 'Real satellites', catalog.element]];
+  const viewTabs = {};
+  const viewPanes = {};
+  const viewList = h('div', { class: 'viewtabs', role: 'tablist', 'aria-label': 'Right panel' });
+  for (const [key, label, content] of views) {
+    viewTabs[key] = h('button', { class: 'viewtab', type: 'button', role: 'tab', id: `hud-view-${key}`, 'aria-controls': `hud-viewpane-${key}`, 'aria-selected': 'false', tabindex: '-1', text: label });
+    viewPanes[key] = h('div', { class: 'panel__body', role: 'tabpanel', id: `hud-viewpane-${key}`, 'aria-labelledby': `hud-view-${key}`, hidden: true }, content);
+    viewList.append(viewTabs[key]);
+  }
+  const rightPanel = h('section', { class: 'panel panel--views', 'aria-label': 'Launch and real satellites' },
+    h('div', { class: 'panel__head' }, h('h2', { class: 'panel__h sr-only', text: 'Launch and real satellites' }), viewList),
+    ...Object.values(viewPanes));
+  let activeView = store.get('rightView', 'launch') === 'real' ? 'real' : 'launch';
+  function selectView(key, focus = false) {
+    activeView = key;
+    for (const [k] of views) {
+      viewTabs[k].setAttribute('aria-selected', k === key ? 'true' : 'false');
+      viewTabs[k].tabIndex = k === key ? 0 : -1;
+      viewPanes[k].hidden = k !== key;
+    }
+    if (focus) viewTabs[key].focus();
+    store.set('rightView', key);
+  }
+  for (const [k] of views) viewTabs[k].addEventListener('click', () => selectView(k));
+  viewList.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    e.preventDefault();
+    selectView(activeView === 'launch' ? 'real' : 'launch', true);
+  });
+  selectView(activeView);
+  const rightCol = h('aside', { class: 'side-dock side-dock--right', id: 'hud-right', 'aria-label': 'Launch and real satellites' }, rightPanel);
 
   // ======================================================= settings popover
   const guiHost = h('div', { class: 'settings-host' });
@@ -497,6 +541,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   }
   camgroup.querySelector('[data-cam="eci"]').addEventListener('click', () => call(handlers.onResetView));
   clearDebrisBtn.addEventListener('click', () => call(handlers.onClearDebris));
+  cloneBtn.addEventListener('click', () => { if (state.selectedId && isReal(state.selectedId)) call(handlers.onCloneReal, state.selectedId); });
   apBtns.circularize.addEventListener('click', () => call(handlers.onAutopilot, 'circularize'));
   apBtns.hohmann.addEventListener('click', () => call(handlers.onAutopilot, 'hohmann'));
   apBtns.refuel.addEventListener('click', () => call(handlers.onAutopilot, 'refuel'));
@@ -744,7 +789,10 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   let lastWarpIndex = -1;
   let lastPaused = null;
   let lastLimited = null;
+  let lastSourceTick = 0;
   function setTime({ date, warpIndex, paused, warpLimited } = {}) {
+    const nowMs = Date.now();
+    if (nowMs - lastSourceTick > 30000) { lastSourceTick = nowMs; catalog.tick(); }
     if (date != null) {
       const p = utcParts(date);
       dateSlot.set(p.date);
@@ -850,7 +898,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
       lastSelRow = r;
     }
     const body = state.selectedId != null ? state.bodies.get(state.selectedId) : null;
-    const can = state.selectedId != null && !FIXED_BODIES.has(state.selectedId) && (!body || body.status !== 'impacted');
+    const can = state.selectedId != null && !FIXED_BODIES.has(state.selectedId) && !isReal(state.selectedId) && (!body || body.status !== 'impacted');
     if (can !== state.canFly) {
       state.canFly = can;
       for (const b of Object.values(padBtns)) b.disabled = !can;
@@ -913,18 +961,35 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     const id = String(t.id ?? '');
     const isEarth = id === 'earth';
     const fixed = FIXED_BODIES.has(id);
-    const idKind = isEarth ? 'earth' : fixed ? 'moon' : 'craft';
+    const real = t.kind === 'real' || isReal(id);
+    const idKind = isEarth ? 'earth' : fixed ? 'moon' : real ? 'real' : 'craft';
     if (idKind !== lastIdKind) {
       lastIdKind = idKind;
       for (const k of ['pe', 'ap', 'period', 'inc']) stats[k].wrap.hidden = fixed;
       detailsBtn.parentElement.hidden = isEarth;
       details.classList.toggle('is-suppressed', isEarth);
       env.slots.moon.tr.hidden = id === 'moon';
+      realBlock.hidden = !real;
     }
     if (t.color !== lastColor) { lastColor = t.color; idSwatch.style.setProperty('--c', t.color || '#8a94a3'); }
     idName.set(t.name || id);
     const met = Number.isFinite(t.metS) ? t.metS : t.ageS;
-    idSub.set(fixed ? kindLabel(t.kind) : `${kindLabel(t.kind)} around ${t.centralBody === 'Moon' ? 'the Moon' : 'Earth'} · ${fmtMET(met)}`);
+    if (real) {
+      const bits = ['Real satellite'];
+      if (Number.isFinite(t.norad)) bits.push(`NORAD ${t.norad}`);
+      if (t.groupName) bits.push(String(t.groupName));
+      idSub.set(bits.join(' · '));
+      setAttr(idSub.node.parentElement, 'title', t.intl ? `International designator ${t.intl}` : null);
+      const age = Number(t.elementAgeS);
+      if (Number.isFinite(age)) {
+        ageSlot.set(age < 0 ? `Elements dated ${fmtAge(age)} after the simulation time` : `Elements ${fmtAge(age) === 'just now' ? 'just published' : `${fmtAge(age)} old`}`);
+        const stale = Math.abs(age) > STALE_ELEMENTS_S;
+        toggleClass(ageLine, 'is-stale', stale);
+        ageWarnSlot.set(stale ? ' · SGP4 accuracy degrades with element age' : '');
+      } else { ageSlot.set('Element age unknown'); ageWarnSlot.set(''); toggleClass(ageLine, 'is-stale', false); }
+    } else {
+      idSub.set(fixed ? kindLabel(t.kind) : `${kindLabel(t.kind)} around ${t.centralBody === 'Moon' ? 'the Moon' : 'Earth'} · ${fmtMET(met)}`);
+    }
 
     const hl = fixed ? null : orbitHealth(t);
     const hk = hl ? hl.kind : 'none';
@@ -936,7 +1001,8 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     }
     if (hl) {
       healthLabel.set(hl.label);
-      healthDetail.set(hl.detail);
+      // real satellites cannot be flown: keep the explanation, drop the advice
+      healthDetail.set(real ? `${hl.detail.split('. ')[0].replace(/\.$/, '')}.` : hl.detail);
       const bits = [`${fmtNumber(t.altitudeKm, t.altitudeKm < 100 ? 1 : 0)} km up`];
       if (Number.isFinite(t.periodS)) bits.push(`${t.periodS < 3 * 3600 ? `${Math.round(t.periodS / 60)} min` : fmtPeriod(t.periodS)} per orbit`);
       summarySlot.set(bits.join(' · '));
@@ -1153,6 +1219,8 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     setAlert,
     pushHistory,
     clearHistory,
+    setCatalog: (c) => catalog.setCatalog(c),
+    setSearchResults: (q, r) => catalog.setSearchResults(q, r),
     // extras (not required by the contract, safe to ignore)
     openHelp: (tab) => modal.open(tab),
     closeHelp: () => modal.close(),

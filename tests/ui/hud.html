@@ -85,6 +85,21 @@
       onReset: log('onReset'),
       onClearDebris: log('onClearDebris'),
       onResetView: log('onResetView'),
+      onCatalogToggle: (id, on) => {
+        log('onCatalogToggle')(id, on);
+        const g = catalog.groups.find((x) => x.id === id);
+        if (!g) return;
+        g.visible = on;
+        if (on && !g.loaded) { g.loading = true; setTimeout(() => { g.loading = false; g.loaded = true; hud.setCatalog(catalog); }, 600); }
+        hud.setCatalog(catalog);
+      },
+      onCatalogSearch: (q) => {
+        log('onCatalogSearch')(q);
+        const ql = q.toLowerCase();
+        const hits = REAL.filter((r) => r.name.toLowerCase().includes(ql) || String(r.norad).startsWith(q));
+        setTimeout(() => hud.setSearchResults(q, hits), 40);
+      },
+      onCloneReal: (id) => { log('onCloneReal')(id); hud.toast('Cloned into the sandbox as a new spacecraft', 'success'); },
     };
 
     hud = createHUD(document.getElementById('ui'), handlers, {
@@ -109,6 +124,30 @@
     setTimeout(() => hud.hideLoading(), 400);
 
     hud.setBodies(bodies);
+    // fake real-satellite catalogue
+    const REAL = [
+      { id: 'cat:0', name: 'ISS (ZARYA)', norad: 25544, group: 'stations', groupName: 'Space stations' },
+      { id: 'cat:1', name: 'CSS (TIANHE)', norad: 48274, group: 'stations', groupName: 'Space stations' },
+      { id: 'cat:2', name: 'HST', norad: 20580, group: 'visual', groupName: 'Brightest' },
+      { id: 'cat:3', name: 'NAVSTAR 81 (USA 319)', norad: 48859, group: 'gps', groupName: 'GPS' },
+      { id: 'cat:4', name: 'NAVSTAR 80 (USA 309)', norad: 46826, group: 'gps', groupName: 'GPS' },
+      { id: 'cat:5', name: 'STARLINK-1007', norad: 44713, group: 'starlink', groupName: 'Starlink' },
+    ];
+    const catalog = {
+      source: 'CelesTrak',
+      updated: new Date(Date.now() - 3 * 3600e3),
+      groups: [
+        { id: 'stations', name: 'Space stations', count: 31, visible: true, loading: false, error: null, color: '#5ec4dd', loaded: true },
+        { id: 'visual', name: 'Brightest', count: 162, visible: true, loading: false, error: null, color: '#e7eaef', loaded: true },
+        { id: 'gps', name: 'GPS', count: 31, visible: params.get('catalog') !== 'loading', loading: params.get('catalog') === 'loading', error: null, color: '#6cc59a', loaded: true },
+        { id: 'geo', name: 'Geostationary', count: 572, visible: false, loading: false, error: params.get('catalog') === 'error' ? 'Could not load. Check your connection and try again.' : null, color: '#e3a857', loaded: false },
+        { id: 'starlink', name: 'Starlink', count: 6814, visible: false, loading: false, error: null, color: '#93acf5', loaded: false },
+      ],
+    };
+    if (params.get('catalog') === 'live') catalog.updated = null;
+    hud.setCatalog(catalog);
+    if (params.get('real')) state.selected = 'cat:0';
+
     hud.setSelection(state.selected);
 
     const date = new Date('2026-10-20T14:03:22Z');
@@ -140,7 +179,9 @@
       sim += state.paused ? 0 : warpSteps[state.warpIndex] / 10;
       if (state.thrusting.size) fuel = Math.max(0, fuel - 0.2);
       hud.setTime({ date: new Date(date.getTime() + sim * 1000), warpIndex: state.warpIndex, paused: state.paused, warpLimited: state.warpIndex >= 5 });
-      if (state.selected === 'iss') hud.setTelemetry(telemetry());
+      if (state.selected === 'cat:0') hud.setTelemetry({ ...telemetry(), id: 'cat:0', kind: 'real', name: 'ISS (ZARYA)', norad: 25544, intl: '1998-067A', groupName: 'Space stations',
+        elementAgeS: params.get('real') === 'stale' ? 5.2 * 86400 : 3 * 3600 + sim / 10, fuelKg: NaN, maxFuelKg: NaN, dvRemainingMs: NaN, thrustN: NaN, metS: NaN, ageS: NaN, deltaVUsedMs: NaN, autopilotEtaS: NaN });
+      else if (state.selected === 'iss') hud.setTelemetry(telemetry());
       else if (state.selected) hud.setTelemetry({ ...telemetry(), id: state.selected, name: bodies.find((b) => b.id === state.selected)?.name, kind: bodies.find((b) => b.id === state.selected)?.kind, color: bodies.find((b) => b.id === state.selected)?.color });
     }
     tick();
@@ -155,6 +196,8 @@
     setTimeout(() => hud.toast('ISS (ZARYA) launched into a 408 km orbit', 'success'), 500);
     setTimeout(() => hud.toast('Time warp limited near periapsis', 'warn'), 650);
     hud.setThrusting(params.get('firing') ? ['prograde'] : []);
+    if (params.get('view') === 'real') document.getElementById('hud-view-real').click();
+    if (params.get('q')) { const inp = document.querySelector('.search__input'); inp.value = params.get('q'); inp.dispatchEvent(new Event('input')); }
     if (params.get('details')) { document.querySelector('.details-toggle').click(); const tab = document.getElementById('hud-tab-' + params.get('details')); if (tab) tab.click(); }
   </script>
 </body>
