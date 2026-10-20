@@ -16,6 +16,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { initSpacecraftEnvironment } from './satellite.js';
 
 const QUALITY = {
   high: { maxPixelRatio: 2, bloomScale: 0.5, bloom: true },
@@ -23,7 +24,11 @@ const QUALITY = {
   low: { maxPixelRatio: 1, bloomScale: 0.25, bloom: false },
 };
 
-export function createRenderer(container, { quality = 'high' } = {}) {
+/**
+ * @param {{ quality?: 'low'|'medium'|'high', software?: 'auto'|boolean }} options
+ *   software: treat the device as a CPU rasteriser (cheapest paths); 'auto' detects it.
+ */
+export function createRenderer(container, { quality = 'high', software = 'auto' } = {}) {
   let q = QUALITY[quality] ? quality : 'high';
 
   const renderer = new WebGLRenderer({
@@ -39,6 +44,9 @@ export function createRenderer(container, { quality = 'high' } = {}) {
   renderer.setClearColor(0x000000, 1);
   renderer.domElement.style.display = 'block';
   container.appendChild(renderer.domElement);
+
+  // Software rasterisers (SwiftShader, llvmpipe) cannot afford MSAA.
+  const softwareGL = software === 'auto' ? isSoftwareRenderer(renderer.getContext()) : !!software;
 
   const scene = new Scene();
   const camera = new PerspectiveCamera(45, 1, 1e-4, 2e5);
@@ -61,12 +69,12 @@ export function createRenderer(container, { quality = 'high' } = {}) {
     return Math.min(window.devicePixelRatio || 1, QUALITY[q].maxPixelRatio);
   }
 
-  // Composer is built lazily so 'low' never allocates the HDR targets.
-  // No MSAA on the target: the Lensflare addon copies pixels out of the
-  // framebuffer, which is illegal on a multisampled FBO.
+  // Composer is built lazily so 'low' never allocates the HDR targets. The
+  // scene target is multisampled (4× MSAA, resolved by three) so geometry
+  // edges stay as clean as on the plain canvas path (not on software GL).
   function ensureComposer() {
     if (composer) return;
-    const target = new WebGLRenderTarget(1, 1, { type: HalfFloatType });
+    const target = new WebGLRenderTarget(1, 1, { type: HalfFloatType, samples: softwareGL ? 0 : 4 });
     composer = new EffectComposer(renderer, target);
     composer.addPass(new RenderPass(scene, camera));
     // strength, radius, threshold: high threshold so only HDR (>1) pixels glow
@@ -118,6 +126,21 @@ export function createRenderer(container, { quality = 'high' } = {}) {
 
   setBloom(bloomEnabled);
   setSize(width, height);
+  initSpacecraftEnvironment(renderer, { software: softwareGL }); // PBR reflections for spacecraft
 
   return { renderer, scene, camera, labelRenderer, setSize, setBloom, setQuality, render };
+}
+
+/** True on software rasterisers (SwiftShader, llvmpipe): no GPU, so keep every cost minimal. */
+export function isSoftwareRenderer(gl) {
+  try {
+    let name = String(gl.getParameter(gl.RENDERER) || '');
+    if (/^webkit webgl$/i.test(name)) { // Chrome masks RENDERER; the debug extension has the real name
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      if (ext) name = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '');
+    }
+    return /swiftshader|llvmpipe|softpipe|software/i.test(name);
+  } catch {
+    return false;
+  }
 }

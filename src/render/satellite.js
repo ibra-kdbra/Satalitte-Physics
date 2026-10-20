@@ -1,16 +1,22 @@
 // Procedural spacecraft visuals + impact flash.
 //
-// Budget per spacecraft: ≤ 12 draw calls, < 600 triangles, shared geometry and
-// materials (built once on first use), only the accent/halo/ring/plasma
-// materials are per instance. update() does no allocations.
+// Budget per spacecraft: ≤ 14 draw calls, < 900 triangles, shared geometry and
+// textures (built once on first use). Materials are PBR (MeshPhysicalMaterial)
+// and per instance, because each craft turns the shared environment map so
+// that its Earth-lit half faces nadir (envMapRotation) and scales it with the
+// Earth's apparent size and phase. update() does no allocations.
+//
+// Environment: a PMREM of a tiny procedural sky (black space above, a bright
+// blue-white Earth below with a glowing limb), built once by
+// initSpacecraftEnvironment(renderer), which createRenderer calls.
 //
 // Model space: 1 unit ≈ 10 m, +Z = prograde, +Y = radial out (zenith),
 // ±X = orbit normal (solar panel wings), dish faces nadir (-Y). The root object is never rotated, only
 // translated and uniformly scaled, so the halo/ring sprites stay screen-aligned.
 import {
   Group, Mesh, BoxGeometry, CylinderGeometry, LatheGeometry, IcosahedronGeometry, SphereGeometry,
-  MeshStandardMaterial, MeshBasicMaterial, ShaderMaterial, Sprite, SpriteMaterial, DataTexture,
-  RGBAFormat, SRGBColorSpace, LinearFilter, LinearMipmapLinearFilter, RepeatWrapping, Vector2,
+  MeshPhysicalMaterial, MeshStandardMaterial, MeshBasicMaterial, ShaderMaterial, PMREMGenerator, Scene, BackSide, Sprite, SpriteMaterial, DataTexture,
+  RGBAFormat, SRGBColorSpace, NoColorSpace, LinearFilter, LinearMipmapLinearFilter, RepeatWrapping, Vector2,
   Vector3, Matrix4, Quaternion, Color, AdditiveBlending, DoubleSide,
 } from 'three';
 import { getSpriteTexture } from './textures.js';
@@ -84,25 +90,52 @@ function makeTexture(w, h, fn, srgb = true) {
 
 function getShared() {
   if (shared) return shared;
-  // Crinkled foil: value noise used as a bump map
   let seed = 7;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  const foilBump = makeTexture(64, 64, () => { const v = 90 + rnd() * 120; return [v, v, v]; }, false);
-  foilBump.repeat.set(2, 2);
-  // Solar cells: blue cells with thin bright grid lines
-  const cells = makeTexture(64, 32, (x, y) => {
-    const line = x % 8 === 0 || y % 8 === 0;
-    const sheen = 20 * Math.sin(x * 0.4) * Math.sin(y * 0.3);
-    return line ? [150, 160, 180] : [20 + sheen * 0.2, 45 + sheen * 0.4, 120 + sheen];
+
+  // Crinkled MLI foil: a height field of random creases (sum of sharp ridged
+  // noise at a few scales), turned into a tangent-space normal map.
+  const N = 128;
+  const hgt = new Float32Array(N * N);
+  for (let oct = 0; oct < 3; oct++) {
+    const cells = 5 << oct;
+    const grid = new Float32Array((cells + 1) * (cells + 1)).map(() => rnd());
+    for (let i = 0; i <= cells; i++) grid[cells * (cells + 1) + i] = grid[i]; // tile
+    for (let j = 0; j <= cells; j++) grid[j * (cells + 1) + cells] = grid[j * (cells + 1)];
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const gx = (x / N) * cells, gy = (y / N) * cells;
+      const ix = Math.floor(gx), iy = Math.floor(gy), fx = gx - ix, fy = gy - iy;
+      const g = (a, b) => grid[(iy + b) * (cells + 1) + ix + a];
+      const v = (g(0, 0) * (1 - fx) + g(1, 0) * fx) * (1 - fy) + (g(0, 1) * (1 - fx) + g(1, 1) * fx) * fy;
+      hgt[y * N + x] += (1 - Math.abs(v * 2 - 1)) / (1 << oct); // ridges = creases
+    }
+  }
+  const foilNormal = makeTexture(N, N, (x, y) => {
+    const h = (xx, yy) => hgt[((yy + N) % N) * N + ((xx + N) % N)];
+    const dx = (h(x + 1, y) - h(x - 1, y)) * 2.5, dy = (h(x, y + 1) - h(x, y - 1)) * 2.5;
+    const l = Math.hypot(dx, dy, 1);
+    return [(-dx / l * 0.5 + 0.5) * 255, (-dy / l * 0.5 + 0.5) * 255, (1 / l * 0.5 + 0.5) * 255];
+  }, false);
+  foilNormal.repeat.set(1, 1);
+
+  // Solar array: 8×4 blocks of cells, each cell dark blue with chamfered
+  // corners and a faint sheen, silver bus bars between cells.
+  const cells = makeTexture(256, 128, (x, y) => {
+    const cx = x % 32, cy = y % 32;
+    const gap = cx < 2 || cy < 2;
+    const corner = Math.min(cx, 31 - cx) + Math.min(cy, 31 - cy) < 7;
+    const finger = cy % 8 === 5 && cx > 3 && cx < 29;
+    if (gap || corner) return [175, 180, 190];
+    if (finger) return [70, 82, 110];
+    const sheen = 6 * Math.sin(x * 0.11 + y * 0.07);
+    return [14 + sheen * 0.3, 26 + sheen * 0.5, 64 + sheen];
   });
-
-  const mats = {
-    gold: new MeshStandardMaterial({ color: 0xd9a22e, metalness: 0.6, roughness: 0.42, bumpMap: foilBump, bumpScale: 0.8, emissive: 0x281800 }),
-    panel: new MeshStandardMaterial({ map: cells, color: 0xffffff, metalness: 0.35, roughness: 0.28, emissive: 0x060c26, side: DoubleSide }),
-    white: new MeshStandardMaterial({ color: 0xe6e8ea, metalness: 0.1, roughness: 0.55, side: DoubleSide }),
-    dark: new MeshStandardMaterial({ color: 0x4a4d52, metalness: 0.6, roughness: 0.5 }),
-  };
-
+  const cellsRough = makeTexture(256, 128, (x, y) => {
+    const cx = x % 32, cy = y % 32;
+    const metal = cx < 2 || cy < 2;
+    return [255, metal ? 120 : 60, metal ? 230 : 40]; // G = roughness, B = metalness
+  }, false);
+  const textures = { foilNormal, cells, cellsRough };
   // Parabolic dish via lathe (opening towards -Y once placed)
   const dishPts = [];
   for (let i = 0; i <= 6; i++) { const r = (i / 6) * 0.65; dishPts.push(new Vector2(r, r * r * 0.55)); }
@@ -137,7 +170,7 @@ function getShared() {
     plume: new CylinderGeometry(0.0, 1, 1, 16, 4, true).rotateX(Math.PI).translate(0, 0.5, 0),
     flashShell: new SphereGeometry(1, 32, 16),
   };
-  shared = { mats, geos };
+  shared = { textures, geos };
   return shared;
 }
 
@@ -223,8 +256,29 @@ void main() {
   #include <colorspace_fragment>
 }`;
 
-function buildModel(kind, accentMat) {
-  const { mats, geos } = getShared();
+// Per-instance PBR materials (see the header for why they are not shared).
+function makeMaterials() {
+  const { textures } = getShared();
+  const env = { envMap: spacecraftEnv, envMapIntensity: 1 };
+  // Software GL: the standard model (no clearcoat layer) is half the shading cost.
+  const Physical = softwareGL ? MeshStandardMaterial : MeshPhysicalMaterial;
+  const coat = softwareGL ? {} : { clearcoat: 1, clearcoatRoughness: 0.06 };
+  return {
+    gold: new Physical({
+      ...env, color: 0xe3b04a, metalness: 1, roughness: 0.34, normalMap: textures.foilNormal,
+      normalScale: new Vector2(0.6, 0.6),
+    }),
+    panel: new Physical({
+      ...env, ...coat, map: textures.cells, roughnessMap: textures.cellsRough, metalnessMap: textures.cellsRough,
+      roughness: 1, metalness: 1, side: DoubleSide,
+    }),
+    white: new Physical({ ...env, color: 0xe8e8e6, metalness: 0, roughness: 0.55, side: DoubleSide }),
+    dark: new Physical({ ...env, color: 0x6b6f75, metalness: 0.85, roughness: 0.38 }),
+  };
+}
+
+function buildModel(kind, accentMat, mats) {
+  const { geos } = getShared();
   const model = new Group();
   const pivots = [];
   let span;
@@ -265,6 +319,58 @@ function buildModel(kind, accentMat) {
   return { model, pivots, span };
 }
 
+// ---------------------------------------------------------------------------
+// Environment for spacecraft reflections
+
+const EARTH_R = 6.371;
+const ENV_EARTH_ANGLE = (70 * Math.PI) / 180; // Earth's angular radius from LEO
+let spacecraftEnv = null;
+let softwareGL = false;
+
+const ENV_VERT = /* glsl */`
+varying vec3 vDir;
+#include <common>
+#include <logdepthbuf_pars_vertex>
+void main() {
+  vDir = position;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  #include <logdepthbuf_vertex>
+}`;
+const ENV_FRAG = /* glsl */`
+varying vec3 vDir;
+#include <common>
+#include <logdepthbuf_pars_fragment>
+void main() {
+  #include <logdepthbuf_fragment>
+  vec3 d = normalize(vDir);
+  float c = dot(d, vec3(0.0, -1.0, 0.0));            // 1 at nadir
+  float edge = cos(${ENV_EARTH_ANGLE.toFixed(4)});
+  float earth = smoothstep(edge - 0.02, edge + 0.02, c);
+  float limb = 1.0 - smoothstep(edge, 1.0, c);       // brighter, bluer towards the horizon
+  vec3 ground = mix(vec3(0.20, 0.27, 0.40), vec3(0.42, 0.55, 0.80), pow(limb, 3.0));
+  // a few soft cloud bands so reflections are not perfectly uniform
+  ground *= 0.85 + 0.3 * sin(d.x * 9.0 + sin(d.z * 7.0) * 2.0) * sin(d.z * 6.0);
+  vec3 space = vec3(0.004, 0.005, 0.008);
+  gl_FragColor = vec4(mix(space, ground, earth), 1.0);
+}`;
+
+/** Builds the shared reflection environment; call once with the renderer. */
+export function initSpacecraftEnvironment(renderer, { software = false } = {}) {
+  softwareGL = software;
+  if (spacecraftEnv) return spacecraftEnv;
+  const scene = new Scene();
+  const mat = new ShaderMaterial({ vertexShader: ENV_VERT, fragmentShader: ENV_FRAG, side: BackSide, depthWrite: false });
+  const sky = new Mesh(new SphereGeometry(10, 48, 24), mat);
+  scene.add(sky);
+  const pmrem = new PMREMGenerator(renderer);
+  const rt = pmrem.fromScene(scene, 0, 0.1, 100);
+  pmrem.dispose();
+  sky.geometry.dispose();
+  mat.dispose();
+  spacecraftEnv = rt.texture;
+  return spacecraftEnv;
+}
+
 // scratch (shared by all instances; update() is synchronous)
 const _basis = new Matrix4();
 const _x = new Vector3();
@@ -278,7 +384,9 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
   const { geos } = getShared();
   const accent = new Color(color);
   const accentMat = new MeshBasicMaterial({ color: accent });
-  const { model, pivots, span } = buildModel(kind, accentMat);
+  const mats = makeMaterials();
+  const matList = Object.values(mats);
+  const { model, pivots, span } = buildModel(kind, accentMat, mats);
 
   const object = new Group();
   object.name = 'Spacecraft';
@@ -307,6 +415,10 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
     depthWrite: false,
     blending: AdditiveBlending,
   });
+  // Hull parts: hidden while the opaque marker covers the craft (far away),
+  // which saves ~12 draw calls per spacecraft in wide views.
+  const hull = model.children.slice();
+  let hullShown = true;
   const plasma = new Mesh(geos.plasma, plasmaMat);
   plasma.scale.set(span * 0.32, span * 0.32, span * 0.42);
   plasma.visible = false;
@@ -341,6 +453,20 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
       model.quaternion.setFromRotationMatrix(_basis.makeBasis(_x, _y, _z));
     }
 
+    // Environment: turn the env map's Earth to nadir; brightness follows the
+    // Earth's apparent size (solid angle) and how much of it is sunlit.
+    if (spacecraftEnv && hullShown) {
+      const r = object.position.length();
+      const ang = Math.asin(Math.min(1, EARTH_R / Math.max(r, EARTH_R)));
+      const solid = Math.min(1.2, (1 - Math.cos(ang)) / (1 - Math.cos(ENV_EARTH_ANGLE)));
+      const lit = sunDir && r > 0 ? 0.5 + 0.5 * object.position.dot(sunDir) / r : 0.5;
+      const k = 0.04 + 1.5 * solid * lit * lit;
+      for (let i = 0; i < matList.length; i++) {
+        matList[i].envMapIntensity = k;
+        matList[i].envMapRotation.setFromQuaternion(model.quaternion);
+      }
+    }
+
     // Solar wings rotate about the X axis to face the Sun.
     if (sunDir && pivots.length) {
       _q.copy(model.quaternion).invert();
@@ -366,6 +492,11 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
       pxLocal = worldPerPx / sc;
     }
     halo.visible = far > 0.01;
+    const showHull = far < 0.5; // marker is fully opaque from far = 0.5 on
+    if (showHull !== hullShown) {
+      hullShown = showHull;
+      for (let i = 0; i < hull.length; i++) hull[i].visible = showHull;
+    }
     haloMat.opacity = Math.min(1, far * 2);
     if (pxLocal > 0) halo.scale.setScalar((MARKER_PX[kind] || 15) * pxLocal);
     else halo.scale.setScalar(span * 1.2);
@@ -405,6 +536,7 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
     ringMat.dispose();
     plasmaMat.dispose();
     plumeMat.dispose();
+    for (const m of matList) m.dispose();
   }
 
   return { object, update, setColor, dispose };

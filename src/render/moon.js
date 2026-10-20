@@ -1,6 +1,6 @@
-// Moon: custom lunar shading (Lommel–Seeliger, which keeps the full Moon
-// flat-looking like the real one instead of Lambert's limb darkening),
-// relief from the albedo gradient, faint earthshine, tidally locked.
+// Moon: Hapke-like regolith shading (Lommel–Seeliger, so the full Moon looks
+// flat like the real one, plus an opposition surge), relief from the albedo's
+// high-pass, earthshine scaled by the Earth's phase, tidally locked.
 import {
   Group, Mesh, SphereGeometry, ShaderMaterial, Vector3, Matrix4,
 } from 'three';
@@ -33,7 +33,7 @@ const FRAG = /* glsl */`
 uniform sampler2D map;
 uniform vec3 sunDir;
 uniform vec3 earthDir;
-uniform vec2 texel;
+uniform float earthLit;   // illuminated fraction of the Earth seen from the Moon
 uniform vec3 tint;
 #include <common>
 #include <logdepthbuf_pars_fragment>
@@ -46,26 +46,34 @@ void main() {
   vec3 N = normalize(vN);
   vec3 T = normalize(vT - N * dot(N, vT));
   vec3 B = cross(N, T);
-  float h = texture2D(map, vUv).g;
-  // albedo doubles as a height field: maria are low, highlands/craters rims high
-  float hx = texture2D(map, vUv + vec2(texel.x, 0.0)).g - texture2D(map, vUv - vec2(texel.x, 0.0)).g;
-  float hy = texture2D(map, vUv + vec2(0.0, texel.y)).g - texture2D(map, vUv - vec2(0.0, texel.y)).g;
-  vec3 Nb = normalize(N - (T * hx + B * hy) * 1.6);
+  vec2 ts = vec2(textureSize(map, 0));
+  vec2 o = 1.0 / ts;
+  float a0 = texture2D(map, vUv).g;
+  // Height from the albedo's high-pass (albedo minus a blurred mip): crater
+  // rims and rays give relief, the broad maria/highland contrast does not.
+  float hx = (texture2D(map, vUv + vec2(o.x, 0.0)).g - texture2D(map, vUv - vec2(o.x, 0.0)).g)
+           - (textureLod(map, vUv + vec2(o.x * 8.0, 0.0), 3.0).g - textureLod(map, vUv - vec2(o.x * 8.0, 0.0), 3.0).g) * 0.125;
+  float hy = (texture2D(map, vUv + vec2(0.0, o.y)).g - texture2D(map, vUv - vec2(0.0, o.y)).g)
+           - (textureLod(map, vUv + vec2(0.0, o.y * 8.0), 3.0).g - textureLod(map, vUv - vec2(0.0, o.y * 8.0), 3.0).g) * 0.125;
+  vec3 Nb = normalize(N - (T * hx + B * hy) * (2.4 * ts.x / 2048.0));
 
   vec3 L = sunDir;
   vec3 V = normalize(cameraPosition - vWorldPos);
   float mu0 = max(dot(Nb, L), 0.0);
-  float mu = max(dot(N, V), 0.05);
-  float ls = 2.0 * mu0 / (mu0 + mu);               // Lommel–Seeliger
-  float lit = mix(mu0, ls * 0.5, 0.65);            // blend keeps relief contrast
-  lit *= smoothstep(-0.02, 0.06, dot(N, L));       // crisp but anti-aliased terminator
+  float mu = max(dot(N, V), 0.1); // geometric: keeps the limb from spiking
+  // Hapke-like regolith: Lommel–Seeliger (flat full Moon, no limb darkening)
+  // blended with a little Lambert for relief, opposition surge near g = 0.
+  float g = acos(clamp(dot(L, V), -1.0, 1.0));     // phase angle
+  float ls = 2.0 * mu0 / (mu0 + mu);
+  float surge = 1.0 + 0.55 / (1.0 + tan(0.5 * g) / 0.06);
+  float lit = mix(mu0, min(ls, 1.6), 0.7) * surge;
+  lit *= smoothstep(-0.015, 0.03, dot(N, L));      // sharp, anti-aliased terminator
 
-  // contrast curve on the albedo, warm grey tint
-  vec3 albedo = pow(vec3(h), vec3(1.15)) * tint;
-  vec3 color = albedo * lit * 1.9;
-  // earthshine: dim bluish light from the Earth on the night side
-  float es = max(dot(N, earthDir), 0.0) * (1.0 - smoothstep(-0.1, 0.1, dot(N, L)));
-  color += albedo * vec3(0.025, 0.032, 0.045) * es;
+  vec3 albedo = pow(vec3(a0), vec3(1.12)) * tint;
+  vec3 color = albedo * lit * 1.35;
+  // Earthshine: sunlight reflected by the Earth lights the night side faintly
+  float es = max(dot(Nb, earthDir), 0.0) * (1.0 - smoothstep(-0.08, 0.06, dot(N, L)));
+  color += albedo * vec3(0.55, 0.65, 0.85) * (0.025 * earthLit * es);
 
   gl_FragColor = vec4(color, 1.0);
   #include <tonemapping_fragment>
@@ -83,8 +91,8 @@ export function createMoon(textures, { quality = 'high' } = {}) {
       map: { value: textures.moon },
       sunDir: { value: sunDir },
       earthDir: { value: earthDir },
-      texel: { value: [1.0 / 2048, 1.0 / 1024] },
-      tint: { value: new Vector3(1.0, 0.96, 0.9) },
+      earthLit: { value: 0.5 },
+      tint: { value: new Vector3(1.0, 0.95, 0.88) },
     },
     vertexShader: VERT,
     fragmentShader: FRAG,
@@ -111,6 +119,8 @@ export function createMoon(textures, { quality = 'high' } = {}) {
     if (_x.lengthSq() < 1e-12) return;
     _x.normalize();
     earthDir.copy(_x);
+    // Earth's phase seen from the Moon: lit fraction = (1 + cos(Sun–Earth–Moon angle))/2
+    mat.uniforms.earthLit.value = 0.5 * (1 - _x.dot(sunDir));
     _y.copy(_up).addScaledVector(_x, -_x.dot(_up)).normalize();
     _zAxis.crossVectors(_x, _y);
     _m.makeBasis(_x, _y, _zAxis);

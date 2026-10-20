@@ -28,7 +28,9 @@
 // Query params (all optional):
 //   cam=x,y,z  target=x,y,z  sun=x,y,z  rot=<earth rad>  q=high|medium|low  bloom=0|1
 //   t=<seconds>  freezes the animation at that time (deterministic screenshots)
+//   moon=x,y,z   Moon position (e.g. 384,0,0 for the real distance)
 //   heat=0..1    re-entry heating on satellite #3       sel=0|1|2 selected satellite
+//   clean=1 hide overlays, fov=<deg> camera field of view
 //   follow=0|1|2 off=x,y,z  close-up camera on a satellite (offset: normal, radial, prograde)
 //   thrust=0 disables the prograde burn plume on #1
 //   flash=<age s> impact flash age in frozen mode      clouds/atmo/lights=0 to disable
@@ -53,7 +55,9 @@ const quality = P.get('q') || 'high';
 const frozen = P.has('t');
 const info = document.getElementById('info');
 
-const view = createRenderer(document.getElementById('viewport'), { quality });
+// hw=1: use the GPU code paths even on a software rasteriser (for screenshots)
+const software = P.get('hw') === '1' ? false : 'auto';
+const view = createRenderer(document.getElementById('viewport'), { quality, software });
 if (P.has('bloom')) view.setBloom(P.get('bloom') === '1');
 const { scene, camera, renderer } = view;
 camera.position.copy(vec('cam', new THREE.Vector3(4, 7, 27)));
@@ -65,7 +69,7 @@ controls.update();
 addEventListener('resize', () => view.setSize(innerWidth, innerHeight));
 
 const textures = await loadTextures(renderer, {
-  quality, basePath: '../../assets/textures/',
+  quality, software, basePath: '../../assets/textures/',
   onProgress: (f, label) => { info.textContent = `loading ${Math.round(f * 100)}% ${label}`; },
 });
 
@@ -76,7 +80,7 @@ const earth = createEarth(textures, { quality });
 scene.add(earth.group);
 const moon = createMoon(textures, { quality });
 scene.add(moon.group);
-const moonPos = new THREE.Vector3(-21, 5, -21); // ~30 units, not to scale
+const moonPos = vec('moon', new THREE.Vector3(-21, 5, -21)); // default ~30 units, not to scale; moon=x,y,z
 const sky = createSky(textures, scene);
 
 const moonLabel = createLabel('Moon', '#c8c8c8');
@@ -165,6 +169,13 @@ const follow = P.has('follow') ? sats[num('follow', 0)] : null;
 const followOff = vec('off', new THREE.Vector3(0.00012, 0.00006, 0.00008));
 const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _n = new THREE.Vector3();
 if (follow) controls.enabled = false;
+// clean=1 hides overlays (labels, craft, lines, grid, markers); fov=<deg> zooms the camera
+if (P.has('fov')) { camera.fov = num('fov', 45); camera.updateProjectionMatrix(); }
+if (P.get('clean') === '1') {
+  for (const s of sats) { s.vis.object.visible = false; s.trail.setVisible(false); s.label.visible = false; }
+  orbit.setVisible(false); target.setVisible(false); grid.setVisible(false); moonLabel.visible = false;
+  preview.hide(); earth.clearImpactMarkers(); moon.clearImpactMarkers(); flash.dispose();
+}
 let t = t0, last = performance.now(), flashTimer = 0, frames = 0;
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000); last = now;

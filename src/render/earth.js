@@ -1,36 +1,78 @@
-// Earth: day/night surface shader, cloud shell, atmosphere shell, impact markers.
+// Earth: physically based surface, cloud layer and atmosphere.
 //
-// All lighting is done in world space from the `sunDir` uniform, so the planet
-// needs no three.js lights. Hierarchy:
+// Everything is lit from the `sunDir` uniform (no three.js lights) and seen
+// through the same single-scattering atmosphere model (atmosphere.js):
 //   group (origin, never rotates)
 //   ├─ spin (rotation.y = sidereal angle)
-//   │   ├─ surface   ShaderMaterial, opaque
-//   │   ├─ clouds    ShaderMaterial, alpha, drifts relative to spin
+//   │   ├─ surface   opaque: Blue Marble albedo, relief from the elevation map,
+//   │   │            sunlight reddened by the air above (Chapman), cloud shadows
+//   │   │            cast along the Sun direction, GGX sun glint on water,
+//   │   │            Black Marble city lights, aerial perspective
+//   │   ├─ clouds    alpha layer 10 km up: relief from coverage, forward
+//   │   │            scattering, aerial perspective; drifts relative to spin
 //   │   └─ markers   impact markers (turn with the planet)
-//   └─ atmosphere    BackSide additive shell (rotation-invariant)
+//   └─ atmosphere    100 km shell: ray-marched limb/sky where the view ray
+//                    misses the planet (premultiplied: radiance + transmittance)
 //
-// Budget: surface 160×80 (high) / 112×56 (medium) / 64×32 (low) segments,
-// 3 draw calls + markers. Fragment cost: 5 texture fetches surface, 5 clouds.
+// Budget (high / medium / low): surface 160×80 / 112×56 / 96×48 segments,
+// 3 draw calls + markers. Per pixel: surface 7 texture taps, clouds 5 taps,
+// plus aerial perspective marched per pixel on high/medium (8/6 steps surface,
+// 5/4 clouds) and per vertex on low and software GL. The shell marches
+// 16/12/8 steps on the limb only (pixels over the planet are discarded first).
 import {
-  Group, Mesh, SphereGeometry, ShaderMaterial, Vector3, Color, BackSide, AdditiveBlending,
-  NormalBlending, RingGeometry, CircleGeometry, MeshBasicMaterial, Sprite, SpriteMaterial,
-  DoubleSide, Quaternion,
+  Group, Mesh, SphereGeometry, ShaderMaterial, Vector3, Color, BackSide, CustomBlending,
+  OneFactor, OneMinusSrcAlphaFactor, NormalBlending, RingGeometry, CircleGeometry, MeshBasicMaterial,
+  Sprite, SpriteMaterial, DoubleSide, Quaternion, Matrix3, Matrix4,
 } from 'three';
 import { getSpriteTexture } from './textures.js';
+import { ATMOSPHERE, ATMOSPHERE_GLSL, SCATTER_STEPS } from './atmosphere.js';
 
 export const EARTH_RADIUS = 6.371; // render units (1 = 1000 km)
-const CLOUD_RADIUS = EARTH_RADIUS * 1.006; // ~38 km, exaggerated for visible parallax
-const ATMO_RADIUS = EARTH_RADIUS * 1.028; // ~180 km visual shell
-const CLOUD_DRIFT = 4e-6; // rad/s of `time`, ~25 m/s winds
+const CLOUD_HEIGHT = 0.010;        // 10 km
+const CLOUD_RADIUS = EARTH_RADIUS + CLOUD_HEIGHT;
+const CLOUD_DRIFT = 4e-6;          // rad/s of `time`, ~25 m/s winds
 const MAX_MARKERS = 64;
 
-const SEGMENTS = { high: [160, 80], medium: [112, 56], low: [64, 32] };
+const SEGMENTS = { high: [160, 80], medium: [112, 56], low: [96, 48] };
 
 // ---------------------------------------------------------------------------
-// GLSL shared pieces
+// GLSL
+
+// Uniforms + atmosphere functions shared by the vertex and fragment stages.
+const COMMON_FRAG = /* glsl */`
+uniform vec3 sunDir;
+uniform vec3 center;
+uniform float sunE;
+uniform float atmoGain;
+uniform float atmosphereOn;
+${ATMOSPHERE_GLSL}
+#ifdef AP_VERTEX
+varying vec3 vApIn;   // in-scattered light, computed per vertex
+varying vec3 vApT;    // view transmittance, computed per vertex
+varying vec3 vSunT;   // sunlight transmittance at the vertex
+#endif
+#ifdef SHADOW_VERTEX
+varying vec2 vShadowUv; // cloud-shadow lookup offset from vUv
+#endif
+// Aerial perspective between the camera and a point at distance dist along rd.
+vec3 aerial(vec3 color, vec3 camRel, vec3 rd, float dist) {
+  if (atmosphereOn < 0.5) return color;
+#ifdef AP_VERTEX
+  return color * vApT + vApIn;
+#else
+  vec2 hit = aRaySphere(camRel, rd, A_TR);
+  vec3 Tv;
+  vec3 ins = aScatter(camRel, rd, max(hit.x, 0.0), dist, sunDir, Tv);
+  return color * Tv + ins * (sunE * atmoGain);
+#endif
+}
+`;
 
 // Sphere tangent frame from the object-space normal. With SphereGeometry's
 // UV layout, +u (east) is d/dphi = (nz, 0, -nx) normalised and +v is north.
+// With AP_VERTEX (low quality, software GL) the aerial perspective is
+// evaluated here per vertex instead of per pixel; vertices lie exactly on
+// the sphere, so this is facet-free and ~100× cheaper.
 const VERT_TANGENT = /* glsl */`
 #include <common>
 #include <logdepthbuf_pars_vertex>
@@ -38,6 +80,11 @@ varying vec2 vUv;
 varying vec3 vN;
 varying vec3 vT;
 varying vec3 vWorldPos;
+${COMMON_FRAG}
+#ifdef SHADOW_VERTEX
+uniform mat3 earthInv;
+uniform float cloudShift;
+#endif
 void main() {
   vUv = uv;
   vec3 t = vec3(normal.z, 0.0, -normal.x);
@@ -48,91 +95,122 @@ void main() {
   vec4 wp = modelMatrix * vec4(position, 1.0);
   vWorldPos = wp.xyz;
   gl_Position = projectionMatrix * viewMatrix * wp;
+#ifdef AP_VERTEX
+  vec3 Pn = normalize(wp.xyz - center);
+  vSunT = aSunTransmittance(length(wp.xyz - center), dot(Pn, sunDir));
+#ifdef SHADOW_VERTEX
+  vec3 sp = normalize(earthInv * (Pn * A_PR + sunDir * (${CLOUD_HEIGHT.toFixed(4)} / max(dot(Pn, sunDir), 0.15))));
+  vec2 suv = vec2(atan(sp.z, -sp.x) * 0.15915494 + cloudShift, 1.0 - acos(clamp(sp.y, -1.0, 1.0)) * 0.31830989);
+  vShadowUv = suv - uv;
+  vShadowUv.x = fract(vShadowUv.x + 0.5) - 0.5; // interpolate the offset, not the wrapped coordinate
+#endif
+  vApIn = vec3(0.0);
+  vApT = vec3(1.0);
+  if (atmosphereOn > 0.5) {
+    vec3 camRel = cameraPosition - center;
+    vec3 toCam = camRel - (wp.xyz - center);
+    float dist = length(toCam);
+    vec3 rd = -toCam / dist;
+    vec2 hit = aRaySphere(camRel, rd, A_TR);
+    vApIn = aScatter(camRel, rd, max(hit.x, 0.0), dist, sunDir, vApT) * (sunE * atmoGain);
+  }
+#endif
   #include <logdepthbuf_vertex>
-}`;
-
-// Colour of the sky at a point whose sun elevation cosine is s:
-// blue by day, orange/red through the terminator, black at night.
-const GLSL_ATMO = /* glsl */`
-vec3 atmosphereTint(float s) {
-  vec3 dayCol = vec3(0.28, 0.55, 1.0);
-  vec3 sunsetCol = vec3(1.0, 0.38, 0.12);
-  float dayW = smoothstep(-0.06, 0.2, s);
-  float lit = smoothstep(-0.32, 0.03, s);
-  return mix(sunsetCol, dayCol, dayW) * lit;
-}
-// Direct sunlight reddens close to the terminator (long air path).
-vec3 sunColor(float s) {
-  return mix(vec3(1.0, 0.52, 0.30), vec3(1.0, 0.98, 0.95), smoothstep(0.0, 0.22, s));
 }`;
 
 const SURFACE_FRAG = /* glsl */`
 uniform sampler2D dayMap;
 uniform sampler2D nightMap;
-uniform sampler2D normalMap;
-uniform sampler2D specMap;
+uniform sampler2D reliefMap;
 uniform sampler2D cloudMap;
-uniform vec3 sunDir;
-uniform float cloudShift;
+uniform mat3 earthInv;      // world → Earth-fixed rotation
+uniform float cloudShift;   // cloud texture u offset (drift)
 uniform float cloudsOn;
 uniform float cityLights;
-uniform float atmosphereOn;
-uniform float normalScale;
+uniform float bumpScale;
 #include <common>
 #include <logdepthbuf_pars_fragment>
 varying vec2 vUv;
 varying vec3 vN;
 varying vec3 vT;
 varying vec3 vWorldPos;
-${GLSL_ATMO}
+${COMMON_FRAG}
 void main() {
   #include <logdepthbuf_fragment>
   vec3 N = normalize(vN);
   vec3 T = normalize(vT - N * dot(N, vT));
   vec3 B = cross(N, T);
-  vec3 tn = texture2D(normalMap, vUv).xyz * 2.0 - 1.0;
-  tn.xy *= normalScale;
-  vec3 Nb = normalize(T * tn.x + B * tn.y + N * tn.z);
+
+  // Relief: elevation gradient (forward differences, resolution aware)
+  vec2 ts = vec2(textureSize(reliefMap, 0));
+  vec4 rel = texture2D(reliefMap, vUv);
+  float hx = texture2D(reliefMap, vUv + vec2(1.0 / ts.x, 0.0)).r - rel.r;
+  float hy = texture2D(reliefMap, vUv + vec2(0.0, 1.0 / ts.y)).r - rel.r;
+  float water = smoothstep(0.3, 0.7, rel.g);
+  vec3 Nb = normalize(N - (T * hx + B * hy) * (bumpScale * ts.x / 2048.0) * (1.0 - water));
 
   vec3 L = sunDir;
-  vec3 V = normalize(cameraPosition - vWorldPos);
-  float sGeo = dot(N, L);   // smooth terminator from the geometric normal
-  float sBump = dot(Nb, L); // relief shading
+  // Snap to the true sphere: the tessellated mesh dips up to ~1 km below it,
+  // which the 1.2 km Mie scale height would turn into visible facets.
+  vec3 P = normalize(vWorldPos - center) * A_PR;
+  vec3 camRel = cameraPosition - center;
+  vec3 toCam = camRel - P;
+  float dist = length(toCam);
+  vec3 V = toCam / dist;
+  float mu = dot(N, L);
+
+  // Sunlight that reaches the ground, reddened near the terminator
+#ifdef AP_VERTEX
+  vec3 E = sunE * vSunT;
+#else
+  vec3 E = sunE * aSunTransmittance(A_PR, mu);
+#endif
+
+  // Cloud shadow: the cloud above the point along the Sun direction
+#ifdef SHADOW_VERTEX
+  float cs = texture2D(cloudMap, vUv + vShadowUv).r * cloudsOn;
+#else
+  vec3 sp = earthInv * (P + L * (${CLOUD_HEIGHT.toFixed(4)} / max(mu, 0.15)));
+  sp = normalize(sp);
+  vec2 suv = vec2(fract(atan(sp.z, -sp.x) * 0.15915494 + cloudShift), 1.0 - acos(clamp(sp.y, -1.0, 1.0)) * 0.31830989);
+  float cs = textureGrad(cloudMap, suv, dFdx(vUv), dFdy(vUv)).r * cloudsOn;
+#endif
+  float cover = smoothstep(0.15, 0.85, cs);
+  float shadow = 1.0 - 0.75 * cover;
 
   vec3 albedo = texture2D(dayMap, vUv).rgb;
-  float ocean = texture2D(specMap, vUv).r;
-  float cloud = texture2D(cloudMap, vUv + vec2(cloudShift, 0.0)).r * cloudsOn;
-  float cloudShadow = 1.0 - 0.45 * smoothstep(0.1, 0.9, cloud);
+  float ndl = max(dot(Nb, L), 0.0);
+  vec3 color = albedo * RECIPROCAL_PI * E * ndl * shadow;
+  // Skylight (stands in for multiple scattering): bluish, fades through twilight
+  float dayAmt = smoothstep(-0.12, 0.3, mu);
+  vec3 sky = vec3(0.32, 0.48, 0.85) * (0.10 * sunE) * dayAmt;
+  color += albedo * RECIPROCAL_PI * sky * (0.6 + 0.4 * shadow);
 
-  vec3 sunCol = sunColor(sGeo);
-  float dayMask = smoothstep(-0.04, 0.10, sGeo); // relief can't light the night side
-  vec3 direct = sunCol * max(sBump, 0.0) * dayMask * cloudShadow;
-  // twilight: scattered light just past the terminator, warm and dim
-  float tw = smoothstep(-0.22, 0.0, sGeo) * (1.0 - smoothstep(0.0, 0.3, sGeo));
-  vec3 skyFill = vec3(0.25, 0.38, 0.65) * 0.05 * dayMask + vec3(0.6, 0.35, 0.25) * tw * 0.07;
-  vec3 color = albedo * (direct * 1.12 + skyFill);
-  color += albedo * vec3(0.0025, 0.003, 0.0045); // faint moonlight/earthshine floor
+  // Water: GGX sun glint (wind-roughened sea) + Fresnel sky reflection
+  if (water > 0.01) {
+    vec3 H = normalize(L + V);
+    float nh = max(dot(N, H), 0.0);
+    float nv = max(dot(N, V), 1e-3);
+    float nl = max(mu, 0.0);
+    float a = 0.08;
+    float a2 = a * a;
+    float dd = nh * nh * (a2 - 1.0) + 1.0;
+    float D = a2 / (PI * dd * dd);
+    float F = 0.02 + 0.98 * pow(1.0 - max(dot(H, V), 0.0), 5.0);
+    float kq = a * 0.5;
+    float G = 1.0 / ((nl * (1.0 - kq) + kq) * (nv * (1.0 - kq) + kq));
+    vec3 spec = E * (D * F * G * 0.25 * nl) * shadow;
+    float Fv = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
+    color = mix(color, color * (1.0 - Fv) + spec + Fv * sky * 0.6, water);
+  }
 
-  // Ocean: sun glint (tight core + broad sheen) and grazing sky reflection
-  vec3 H = normalize(L + V);
-  float nh = max(dot(N, H), 0.0);
-  float nv = max(dot(N, V), 0.0);
-  float fres = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
-  float glint = pow(nh, 160.0) * 3.0 + pow(nh, 22.0) * 0.18;
-  color += ocean * sunCol * glint * max(sGeo, 0.0) * dayMask * (1.0 - cloud) * (0.4 + fres);
-  color += ocean * atmosphereTint(sGeo) * fres * 0.18 * atmosphereOn;
+  // City lights: fade in after sunset, dimmed under cloud
+  float night = (1.0 - smoothstep(-0.16, 0.03, mu)) * cityLights;
+  float lights = texture2D(nightMap, vUv).r;
+  color += vec3(1.0, 0.70, 0.38) * (lights * 2.4 * night * (1.0 - 0.8 * cover));
+  color += albedo * 0.0012; // starlight/airglow floor: the night side is not pure black
 
-  // City lights fade in across the terminator
-  vec3 lights = texture2D(nightMap, vUv).rgb;
-  float night = 1.0 - smoothstep(-0.20, 0.05, sGeo);
-  color += lights * vec3(1.0, 0.86, 0.62) * night * cityLights * 1.6;
-
-  // Aerial perspective: haze thickens towards the limb
-  float rim = pow(1.0 - nv, 3.2);
-  vec3 haze = atmosphereTint(sGeo);
-  haze *= mix(0.45, 1.0, smoothstep(0.0, 0.3, sGeo)); // sunset band stays a thin accent
-  color = mix(color, color * 0.7, rim * atmosphereOn) + haze * (0.03 + 0.5 * rim) * atmosphereOn;
-
+  color = aerial(color, camRel, -V, dist);
   gl_FragColor = vec4(color, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -140,8 +218,6 @@ void main() {
 
 const CLOUD_FRAG = /* glsl */`
 uniform sampler2D cloudMap;
-uniform vec3 sunDir;
-uniform vec2 texel;
 uniform float opacity;
 #include <common>
 #include <logdepthbuf_pars_fragment>
@@ -149,34 +225,49 @@ varying vec2 vUv;
 varying vec3 vN;
 varying vec3 vT;
 varying vec3 vWorldPos;
-${GLSL_ATMO}
+${COMMON_FRAG}
 void main() {
   #include <logdepthbuf_fragment>
   float c = texture2D(cloudMap, vUv).r;
-  float a = smoothstep(0.06, 0.8, c);
+  float a = smoothstep(0.12, 0.9, c);
   if (a < 0.004) discard;
   vec3 N = normalize(vN);
   vec3 T = normalize(vT - N * dot(N, vT));
   vec3 B = cross(N, T);
-  // Bump from the coverage gradient: dense cores bulge, giving soft self-shadowing
-  float cx = texture2D(cloudMap, vUv + vec2(texel.x, 0.0)).r - texture2D(cloudMap, vUv - vec2(texel.x, 0.0)).r;
-  float cy = texture2D(cloudMap, vUv + vec2(0.0, texel.y)).r - texture2D(cloudMap, vUv - vec2(0.0, texel.y)).r;
-  vec3 Nb = normalize(N - (T * cx + B * cy) * 2.2);
+  // Relief from the coverage gradient: thick cores bulge → soft self-shadowing
+  vec2 ts = vec2(textureSize(cloudMap, 0));
+  float s = ts.x / 2048.0;
+  vec2 o = 1.5 / ts;
+  float cx = texture2D(cloudMap, vUv + vec2(o.x, 0.0)).r - texture2D(cloudMap, vUv - vec2(o.x, 0.0)).r;
+  float cy = texture2D(cloudMap, vUv + vec2(0.0, o.y)).r - texture2D(cloudMap, vUv - vec2(0.0, o.y)).r;
+  vec3 Nb = normalize(N - (T * cx + B * cy) * 2.0 * s);
+
   vec3 L = sunDir;
-  float sGeo = dot(N, L);
-  float sBump = dot(Nb, L);
-  float dayMask = smoothstep(-0.06, 0.10, sGeo);
-  float lambert = clamp(sBump * 0.85 + 0.15, 0.0, 1.0); // a little wrap: clouds scatter
-  vec3 col = sunColor(sGeo) * lambert * dayMask * mix(0.72, 1.0, c);
-  float tw = smoothstep(-0.2, 0.0, sGeo) * (1.0 - smoothstep(0.0, 0.25, sGeo));
-  col += vec3(0.9, 0.45, 0.3) * tw * 0.06;
-  col += vec3(0.004, 0.005, 0.008); // barely visible at night
-  vec3 V = normalize(cameraPosition - vWorldPos);
-  float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-  col = mix(col, atmosphereTint(sGeo) * 0.9, rim * 0.5);
-  // at night let city lights glow through thin cloud
-  a *= mix(0.7, 1.0, dayMask);
-  gl_FragColor = vec4(col * 0.96, a * opacity);
+  vec3 P = normalize(vWorldPos - center) * (A_PR + ${CLOUD_HEIGHT.toFixed(4)}); // true sphere
+  vec3 camRel = cameraPosition - center;
+  vec3 toCam = camRel - P;
+  float dist = length(toCam);
+  vec3 V = toCam / dist;
+  float mu = dot(N, L);
+#ifdef AP_VERTEX
+  vec3 E = sunE * vSunT;
+#else
+  vec3 E = sunE * aSunTransmittance(A_PR + ${CLOUD_HEIGHT.toFixed(4)}, mu);
+#endif
+
+  // Thick cloud: wrapped diffuse + a forward-scattering lobe that makes thin
+  // edges glow when looking towards the Sun (strongest near the terminator).
+  float diffuse = clamp(dot(Nb, L) * 0.75 + 0.25, 0.0, 1.0) * smoothstep(-0.08, 0.05, mu);
+  float nu = dot(-V, L);
+  float g = 0.6;
+  float hg = (1.0 - g * g) / (12.566371 * pow(1.0 + g * g - 2.0 * g * nu, 1.5));
+  float body = mix(0.72, 1.0, c);
+  vec3 col = 0.9 * RECIPROCAL_PI * E * (diffuse * body + hg * 3.0 * (1.0 - 0.7 * a));
+  col += vec3(0.32, 0.48, 0.85) * (0.10 * sunE) * smoothstep(-0.12, 0.3, mu) * 0.9 * RECIPROCAL_PI;
+
+  col = aerial(col, camRel, -V, dist);
+  a *= mix(0.65, 1.0, smoothstep(-0.15, 0.0, mu)); // let city lights glow through at night
+  gl_FragColor = vec4(col, a * opacity);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
@@ -192,35 +283,30 @@ void main() {
   #include <logdepthbuf_vertex>
 }`;
 
-// Limb glow from the ray's impact parameter b (closest approach to the centre):
-// a Fresnel-like rim that is exactly as thick as the shell and coloured by the
-// sun elevation at the tangent point, plus forward scattering towards the Sun.
+// Sky/limb: rays that miss the planet. Output is premultiplied
+// (rgb = in-scattered light, a = 1 − mean transmittance) so stars and the
+// Moon behind the limb are dimmed and reddened correctly.
 const ATMO_FRAG = /* glsl */`
-uniform vec3 sunDir;
-uniform vec3 center;
-uniform float innerR;
-uniform float outerR;
-uniform float intensity;
 #include <common>
 #include <logdepthbuf_pars_fragment>
 varying vec3 vWorldPos;
-${GLSL_ATMO}
+${COMMON_FRAG}
 void main() {
+  vec3 camRel = cameraPosition - center;
+  vec3 rd = normalize(vWorldPos - cameraPosition);
+  // Over the planet disc the surface shader already did the work.
+  vec2 core = aRaySphere(camRel, rd, A_PR - 0.002);
+  if (core.x < core.y && core.y > 0.0) discard;
+  vec2 hit = aRaySphere(camRel, rd, A_TR);
+  float t0 = max(hit.x, 0.0);
+  float t1 = hit.y;
+  if (t1 <= t0) discard;
+  vec2 ground = aRaySphere(camRel, rd, A_PR);
+  if (ground.x < ground.y && ground.x > t0) t1 = min(t1, ground.x);
   #include <logdepthbuf_fragment>
-  vec3 d = normalize(vWorldPos - cameraPosition);
-  vec3 oc = center - cameraPosition;
-  float tca = max(dot(oc, d), 0.0);
-  vec3 rp = cameraPosition + d * tca - center;
-  float b = length(rp);
-  float h = clamp((b - innerR) / (outerR - innerR), 0.0, 1.0);
-  float dens = exp(-h * 3.5) * (1.0 - h) * (1.0 - h);
-  vec3 n = rp / max(b, 1e-6);
-  float s = dot(n, sunDir);
-  vec3 col = atmosphereTint(s) * 1.25;
-  float g = max(dot(d, sunDir), 0.0);
-  float mie = pow(g, 14.0) * 2.2 + pow(g, 4.0) * 0.25;
-  col += vec3(1.0, 0.68, 0.42) * mie * smoothstep(-0.4, 0.05, s);
-  gl_FragColor = vec4(col * dens * intensity, 1.0);
+  vec3 Tv;
+  vec3 ins = aScatter(camRel, rd, t0, t1, sunDir, Tv) * (sunE * atmoGain);
+  gl_FragColor = vec4(ins, 1.0 - dot(Tv, vec3(0.3333)));
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
@@ -234,6 +320,7 @@ const _z = new Vector3(0, 0, 1);
 /**
  * Builds an impact marker: dark scorch disc + coloured ring lying on the
  * surface, and a small constant-size dot so it stays findable from afar.
+ * Drawn after the cloud layer so clouds never hide it.
  * @param {Vector3} localDirection unit vector in the body-fixed frame
  */
 export function createSurfaceMarker(localDirection, radius, color, size) {
@@ -256,6 +343,7 @@ export function createSurfaceMarker(localDirection, radius, color, size) {
   }));
   dot.scale.setScalar(0.014);
   dot.position.z = size * 0.25;
+  scorch.renderOrder = ring.renderOrder = dot.renderOrder = 3;
   m.add(scorch, ring, dot);
   return m;
 }
@@ -274,28 +362,40 @@ export function disposeMarkerGroup(group) {
 // ---------------------------------------------------------------------------
 
 export function createEarth(textures, { quality = 'high' } = {}) {
-  const [ws, hs] = SEGMENTS[quality] || SEGMENTS.high;
+  const q = SEGMENTS[quality] ? quality : 'high';
+  const [ws, hs] = SEGMENTS[q];
+  // Software GL (no GPU) gets the smallest budget for the ray-marched atmosphere.
+  const steps = SCATTER_STEPS[textures.softwareGL ? 'software' : q];
+  // Phones and software GL evaluate the aerial perspective per vertex.
+  const apDefines = textures.softwareGL || q === 'low' ? { AP_VERTEX: '' } : {};
   const group = new Group();
   group.name = 'Earth';
   const spin = new Group();
   group.add(spin);
 
-  const sunDir = new Vector3(1, 0, 0);
+  // Shared uniform objects: one update drives all three materials.
+  const shared = {
+    sunDir: { value: new Vector3(1, 0, 0) },
+    center: { value: new Vector3() },
+    sunE: { value: ATMOSPHERE.sunIrradiance },
+    atmoGain: { value: 1.05 }, // compensates the missing multiple scattering
+    atmosphereOn: { value: 1 },
+  };
 
   const surfaceMat = new ShaderMaterial({
     uniforms: {
+      ...shared,
       dayMap: { value: textures.earthDay },
       nightMap: { value: textures.earthLights },
-      normalMap: { value: textures.earthNormal },
-      specMap: { value: textures.earthSpecular },
+      reliefMap: { value: textures.earthRelief },
       cloudMap: { value: textures.earthClouds },
-      sunDir: { value: sunDir },
+      earthInv: { value: new Matrix3() },
       cloudShift: { value: 0 },
       cloudsOn: { value: 1 },
       cityLights: { value: 1 },
-      atmosphereOn: { value: 1 },
-      normalScale: { value: 0.9 },
+      bumpScale: { value: 2.2 },
     },
+    defines: { ATMO_STEPS: steps.surface, ...apDefines, ...(apDefines.AP_VERTEX === '' ? { SHADOW_VERTEX: '' } : {}) },
     vertexShader: VERT_TANGENT,
     fragmentShader: SURFACE_FRAG,
   });
@@ -304,12 +404,8 @@ export function createEarth(textures, { quality = 'high' } = {}) {
   spin.add(surface);
 
   const cloudMat = new ShaderMaterial({
-    uniforms: {
-      cloudMap: { value: textures.earthClouds },
-      sunDir: { value: sunDir },
-      texel: { value: [1.5 / 2048, 1.5 / 1024] },
-      opacity: { value: 1 },
-    },
+    uniforms: { ...shared, cloudMap: { value: textures.earthClouds }, opacity: { value: 1 } },
+    defines: { ATMO_STEPS: steps.clouds, ...apDefines },
     vertexShader: VERT_TANGENT,
     fragmentShader: CLOUD_FRAG,
     transparent: true,
@@ -322,21 +418,21 @@ export function createEarth(textures, { quality = 'high' } = {}) {
   spin.add(clouds);
 
   const atmoMat = new ShaderMaterial({
-    uniforms: {
-      sunDir: { value: sunDir },
-      center: { value: new Vector3() },
-      innerR: { value: EARTH_RADIUS },
-      outerR: { value: ATMO_RADIUS },
-      intensity: { value: 2.0 },
-    },
+    uniforms: { ...shared },
+    defines: { ATMO_STEPS: steps.sky },
     vertexShader: ATMO_VERT,
     fragmentShader: ATMO_FRAG,
     side: BackSide,
     transparent: true,
     depthWrite: false,
-    blending: AdditiveBlending,
+    blending: CustomBlending,
+    blendSrc: OneFactor,
+    blendDst: OneMinusSrcAlphaFactor,
+    blendSrcAlpha: OneFactor,
+    blendDstAlpha: OneMinusSrcAlphaFactor,
   });
-  const atmosphere = new Mesh(new SphereGeometry(ATMO_RADIUS, Math.max(48, ws >> 1), Math.max(24, hs >> 1)), atmoMat);
+  const atmoSeg = q === 'low' ? [64, 32] : [128, 64];
+  const atmosphere = new Mesh(new SphereGeometry(ATMOSPHERE.topRadius, atmoSeg[0], atmoSeg[1]), atmoMat);
   atmosphere.name = 'EarthAtmosphere';
   atmosphere.renderOrder = 2;
   group.add(atmosphere);
@@ -344,22 +440,33 @@ export function createEarth(textures, { quality = 'high' } = {}) {
   const markers = new Group();
   spin.add(markers);
 
+  // Follow the progressive 4K upgrade of the Earth maps.
+  if (textures.watch) {
+    textures.watch('earthDay', (t) => { surfaceMat.uniforms.dayMap.value = t; });
+    textures.watch('earthLights', (t) => { surfaceMat.uniforms.nightMap.value = t; });
+    textures.watch('earthRelief', (t) => { surfaceMat.uniforms.reliefMap.value = t; });
+    textures.watch('earthClouds', (t) => { surfaceMat.uniforms.cloudMap.value = t; cloudMat.uniforms.cloudMap.value = t; });
+  }
+
+  const _m4 = new Matrix4();
+
   function update({ rotation = 0, sunDir: sd, time = 0, settings } = {}) {
     spin.rotation.y = rotation;
-    if (sd) sunDir.copy(sd).normalize();
+    surfaceMat.uniforms.earthInv.value.setFromMatrix4(_m4.makeRotationY(rotation)).transpose();
+    if (sd) shared.sunDir.value.copy(sd).normalize();
     // Clouds drift eastward relative to the ground; keep the angle small for float precision.
     const drift = (time * CLOUD_DRIFT) % (Math.PI * 2);
     clouds.rotation.y = drift;
-    // Clouds rotate +drift about Y ⇒ texture appears shifted by -drift/2π in u.
+    // Clouds rotate +drift about Y ⇒ texture appears shifted by −drift/2π in u.
     surfaceMat.uniforms.cloudShift.value = -drift / (Math.PI * 2);
     const showClouds = !settings || settings.clouds !== false;
     const showAtmo = !settings || settings.atmosphere !== false;
     clouds.visible = showClouds;
     atmosphere.visible = showAtmo;
     surfaceMat.uniforms.cloudsOn.value = showClouds ? 1 : 0;
-    surfaceMat.uniforms.atmosphereOn.value = showAtmo ? 1 : 0;
+    shared.atmosphereOn.value = showAtmo ? 1 : 0;
     surfaceMat.uniforms.cityLights.value = !settings || settings.cityLights !== false ? 1 : 0;
-    group.getWorldPosition(atmoMat.uniforms.center.value);
+    group.getWorldPosition(shared.center.value);
   }
 
   function addImpactMarker(localDirection, color) {
