@@ -39,7 +39,7 @@ const CONTROLS = `
       <dt>${kbd('H')}</dt><dd>Reset the view</dd>
       <dt>${kbd('Tab')}</dt><dd>Cycle the selection</dd>
       <dt>${kbd('Delete')}</dt><dd>Remove the selected object</dd>
-      <dt>${kbd('C')}</dt><dd>Cycle camera modes (SAT / CHASE / NADIR)</dd>
+      <dt>${kbd('C')}</dt><dd>Cycle camera modes (Follow, Chase, Nadir)</dd>
       <dt>${kbd('W', 'S')}</dt><dd>Burn prograde / retrograde (hold)</dd>
       <dt>${kbd('A', 'D')}</dt><dd>Burn normal / anti-normal (hold)</dd>
       <dt>${kbd('Q', 'E')}</dt><dd>Burn radial out / radial in (hold)</dd>

@@ -27,6 +27,7 @@ const SPEC = {
       ['drag', 'Atmospheric drag', null, 'Exponential atmosphere that slowly lowers orbits below ~1,000 km.'],
       ['j2', 'J2 oblateness', null, "Earth's equatorial bulge: makes inclined orbits precess."],
       ['moonGravity', 'Moon gravity', null, "The Moon's pull on satellites (third-body perturbation)."],
+      ['sunGravity', "Sun's gravity", null, "The Sun's tidal pull on spacecraft and the Moon."],
     ],
   },
 };

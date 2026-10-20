@@ -14,7 +14,7 @@
 import { h, textSlot, setAttr, toggleClass, call, isTyping, prefersReducedMotion } from './dom.js';
 import { icons } from './icons.js';
 import {
-  fmtAccel, fmtAccelSI, fmtAngle, fmtDeltaV, fmtDensity, fmtDistanceKm, fmtEccentricity, fmtEnergy,
+  fmtAccel, fmtAccelSI, fmtAngle, fmtDeltaV, fmtDensity, fmtDistanceKm, fmtDuration, fmtEccentricity, fmtEnergy,
   fmtLatitude, fmtLongitude, fmtMET, fmtNumber, fmtPeriod, fmtRate, fmtSignedAngle, fmtSpeedKms,
   fmtWarp, fmtWarpMultiplier, utcParts,
 } from './format.js';
@@ -246,6 +246,15 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     h('span', { class: 'status-line__label' }, healthLabel.node),
     h('span', { class: 'status-line__summary' }, summarySlot.node));
   const statusDetail = h('p', { class: 'status-detail' }, healthDetail.node);
+  // summary sits on the label's line when it fits, otherwise wraps as a whole unit
+
+  // quiet facts: lighting and pending autopilot burn
+  const lightSlot = textSlot('');
+  const lightIcon = h('span', { html: icons.sun });
+  const lightFact = h('span', { class: 'fact', title: 'Whether the spacecraft is in sunlight or in a shadow' }, lightIcon, lightSlot.node);
+  const apSlot = textSlot('');
+  const apFact = h('span', { class: 'fact fact--ap', hidden: true, title: 'Pending autopilot burn' }, h('span', { html: icons.timer }), apSlot.node);
+  const facts = h('p', { class: 'facts' }, lightFact, apFact);
 
   const statDefs = [
     ['alt', 'Altitude', 'Height above the surface'],
@@ -294,6 +303,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
       h('div', { class: 'ident__text' }, h('div', { class: 'ident__name' }, idName.node), h('div', { class: 'ident__sub' }, idSub.node))),
     statusLine,
     statusDetail,
+    facts,
     statGrid,
     heatRow,
     h('div', { class: 'selcard__foot' }, detailsBtn),
@@ -423,6 +433,8 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     fuelTrack);
 
   const apToggle = h('button', { class: 'btn btn--quiet btn--sm ap-toggle', type: 'button', 'aria-expanded': 'false', 'aria-controls': 'hud-autopilot', html: `<span>Autopilot</span>${icons.chevron}` });
+  const deckApSlot = textSlot('');
+  const deckApStatus = h('span', { class: 'deck__ap-status', hidden: true }, deckApSlot.node);
   const autopilot = h('div', { class: 'deck__ap', id: 'hud-autopilot' },
     h('div', { class: 'deck__sliders' },
       h('div', { class: 'slider' },
@@ -436,6 +448,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   const deck = h('section', { class: 'deck', 'aria-label': 'Flight controls', hidden: true },
     h('div', { class: 'deck__head' },
       h('p', { class: 'deck__ctl' }, h('span', { class: 'deck__ctl-label', text: 'Controlling' }), ctlSwatch, h('strong', null, ctlName.node)),
+      deckApStatus,
       h('span', { class: 'deck__hint', text: 'Hold a thruster to fire' }),
       apToggle),
     h('div', { class: 'deck__body' },
@@ -551,8 +564,8 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   let lastThrustN = NaN;
   const updateThrottleLabel = () => {
     const pct = Number(throttle.value);
-    const kn = Number.isFinite(lastThrustN) ? ` · ${fmtNumber(lastThrustN / 1000, 1)} kN` : '';
-    throttleSlot.set(`${pct}%${kn}`);
+    throttleSlot.set(`${pct}%`);
+    throttle.parentElement.title = Number.isFinite(lastThrustN) ? `Engine thrust: ${fmtNumber(lastThrustN / 1000, 1)} kN` : 'Engine thrust while a thruster is held';
     throttle.setAttribute('aria-valuetext', `${pct} percent`);
   };
   throttle.addEventListener('input', () => {
@@ -916,9 +929,37 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     if (hl) {
       healthLabel.set(hl.label);
       healthDetail.set(hl.detail);
-      const bits = [`${fmtNumber(t.altitudeKm, t.altitudeKm < 100 ? 1 : 0)} km`];
-      if (Number.isFinite(t.periodS)) bits.push(`${t.periodS < 3 * 3600 ? `${Math.round(t.periodS / 60)} min` : fmtPeriod(t.periodS)} period`);
-      summarySlot.set(`· ${bits.join(' · ')}`);
+      const bits = [`${fmtNumber(t.altitudeKm, t.altitudeKm < 100 ? 1 : 0)} km up`];
+      if (Number.isFinite(t.periodS)) bits.push(`${t.periodS < 3 * 3600 ? `${Math.round(t.periodS / 60)} min` : fmtPeriod(t.periodS)} per orbit`);
+      summarySlot.set(bits.join(' · '));
+    }
+
+    // lighting
+    let light = '';
+    let lightKind = 'sun';
+    if (t.inShadow === true || (Number.isFinite(t.sunlight) && t.sunlight <= 0.001)) {
+      light = t.shadowBody === 'moon' ? "In the Moon's shadow" : "In Earth's shadow";
+      if (id === 'moon') light = "In Earth's shadow (lunar eclipse)";
+      lightKind = 'shadow';
+    } else if (Number.isFinite(t.sunlight) && t.sunlight < 0.999) {
+      light = `Partly shaded · ${Math.round(t.sunlight * 100)} % sunlight`;
+      lightKind = 'shadow';
+    } else if (t.inShadow === false || Number.isFinite(t.sunlight)) light = 'Sunlit';
+    lightSlot.set(light);
+    lightFact.hidden = !light || isEarth;
+    if (lightIcon.dataset.kind !== lightKind) { lightIcon.dataset.kind = lightKind; lightIcon.innerHTML = lightKind === 'sun' ? icons.sun : icons.shadow; }
+    // pending autopilot burn, live countdown
+    const eta = Number(t.autopilotEtaS);
+    if (Number.isFinite(eta) && eta >= 0) {
+      const what = t.autopilot ? String(t.autopilot) : 'Transfer';
+      const txt = `${what} · burn 2 in ${fmtDuration(eta)}`;
+      deckApSlot.set(`Burn 2 in ${fmtDuration(eta)}`);
+      apSlot.set(txt);
+      apFact.hidden = false;
+      deckApStatus.hidden = false;
+    } else if (!apFact.hidden) {
+      apFact.hidden = true;
+      deckApStatus.hidden = true;
     }
 
     stats.alt.set(fmtDistanceKm(t.altitudeKm));

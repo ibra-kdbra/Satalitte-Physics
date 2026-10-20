@@ -25,12 +25,12 @@ function spec(name, el, extra = {}) {
 export const PRESETS = [
   {
     id: 'iss', group: 'Earth orbit', name: 'ISS (LEO)',
-    description: '408 km, 51.6° — a lap every ~92 min. Feels the thin upper atmosphere.',
+    description: '408 km, 51.6°: a lap every ~92 min. Feels the thin upper atmosphere.',
     create: () => [spec('ISS', circ(408, 51.64), { ballistic: 0.005 })],
   },
   {
     id: 'hubble', group: 'Earth orbit', name: 'Hubble',
-    description: '537 km, 28.5° — low inclination, launched from Florida.',
+    description: '537 km, 28.5°: low inclination, launched from Florida.',
     create: () => [spec('Hubble', circ(537, 28.47))],
   },
   {
@@ -40,7 +40,7 @@ export const PRESETS = [
   },
   {
     id: 'constellation', group: 'Earth orbit', name: 'Constellation',
-    description: '18 satellites in 3 planes at 550 km, 53° — like a broadband network.',
+    description: '18 satellites in 3 planes at 550 km, 53°: like a broadband network.',
     create: () => {
       const out = [];
       const base = rand(0, 360);
@@ -56,7 +56,7 @@ export const PRESETS = [
   },
   {
     id: 'gps', group: 'Earth orbit', name: 'GPS (MEO)',
-    description: '20,180 km, 55° — exactly two orbits per sidereal day.',
+    description: '20,180 km, 55°: exactly two orbits per sidereal day.',
     create: () => [spec('GPS', circ(20180, 55))],
   },
   {
@@ -66,7 +66,7 @@ export const PRESETS = [
   },
   {
     id: 'molniya', group: 'Earth orbit', name: 'Molniya',
-    description: 'Highly elliptical, 63.4° — lingers for hours over the far north.',
+    description: 'Highly elliptical, 63.4°: lingers for hours over the far north.',
     create: () => [spec('Molniya', { a: 26600, e: 0.74, i: 63.4 * DEG, raan: rand(0, 360) * DEG, argp: 270 * DEG, nu: 0 })],
   },
   {

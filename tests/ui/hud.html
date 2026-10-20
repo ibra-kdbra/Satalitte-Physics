@@ -48,7 +48,7 @@
     const settings = {
       graphics: { quality: 'high', bloom: true, labels: true, trails: true, trailLength: 2000, orbits: true,
         markers: true, targetRing: true, clouds: true, atmosphere: true, cityLights: true },
-      physics: { drag: true, j2: true, moonGravity: true, throttle: 100 },
+      physics: { drag: true, j2: true, moonGravity: true, sunGravity: true, throttle: 100 },
     };
     const presets = [
       { id: 'iss', group: 'Earth orbit', name: 'ISS (LEO)', description: '408 km, 51.6°: a lap every ~92 min. Feels the thin upper atmosphere.' },
@@ -127,7 +127,7 @@
         raanDeg: 120.0, argpDeg: 45.2, trueAnomalyDeg: nu, flightPathAngleDeg: 0.065 * Math.sin(phase),
         latitudeDeg: lat, longitudeDeg: lon, status: 'orbiting', dragAccel: 2.1e-6, densityKgM3: 3.1e-12,
         j2Accel: 0.0123, gravityAccel: 8.68, escapeVelocityKms: 10.84, heating: 0, distanceToMoonKm: 381234,
-        ageS: sim, metS: sim, deltaVUsedMs: 12.5, fuelKg: fuel, maxFuelKg: 420, dvRemainingMs: 2410 * fuel / 420, thrustN: 18000 * (settings.physics.throttle / 100),
+        ageS: sim, metS: sim, sunlight: Math.sin(phase) > 0.85 ? 0 : 1, inShadow: Math.sin(phase) > 0.85, shadowBody: Math.sin(phase) > 0.85 ? 'earth' : null, autopilot: params.get('ap') ? 'Transfer to 850 km' : null, autopilotEtaS: params.get('ap') ? Math.max(0, 2820 - (sim % 2820)) : NaN, deltaVUsedMs: 12.5, fuelKg: fuel, maxFuelKg: 420, dvRemainingMs: 2410 * fuel / 420, thrustN: 18000 * (settings.physics.throttle / 100),
       };
     }
     // prefill history so the instruments have something to show

@@ -70,6 +70,7 @@ let paused = false;
 let warpLimited = false;
 let selectedId = null;
 let targetAltKm = 850;
+try { targetAltKm = Number(localStorage.getItem('satalitte-physics:v2:targetAlt')) || 850; } catch { /* ignore */ }
 const uiThrust = new Set();
 let lastThrustKey = '';
 const entities = new Map();   // id → { sat, visual, trail, orbit, anchor, label, last }
@@ -168,6 +169,7 @@ async function boot() {
   rig.placeAround(introDirection(), 24);
 
   applyAllSettings();
+  hud.setTargetAltitude?.(targetAltKm);
   // A few classic orbits so the first view is alive.
   const startPresets = params.has('empty') ? [] : urlPresets.length ? urlPresets : ['iss', 'gps', 'geo', 'molniya'];
   for (const id of startPresets) launchPreset(id, { quiet: true, select: false });
@@ -489,7 +491,7 @@ function frame(now) {
   view.render();
 
   hudClock += dt;
-  if (hudClock >= HUD_INTERVAL) { hudClock = 0; updateHud(); }
+  if (hudClock >= HUD_INTERVAL) { hudClock = 0; updateHud(); updateFraming(); }
 }
 
 /** Is the point hidden from the camera behind the Earth or the Moon? */
@@ -656,15 +658,15 @@ function updateAlert(t) {
   if (t && !PLANET_IDS.has(t.id)) {
     const sat = entities.get(t.id)?.sat;
     if (t.status === 'impacted') {
-      text = `LOSS OF SIGNAL — ${t.name.toUpperCase()} IMPACTED ${sat?.impact?.body === 'moon' ? 'THE MOON' : 'EARTH'}`;
+      text = `Loss of signal: ${t.name} impacted ${sat?.impact?.body === 'moon' ? 'the Moon' : 'Earth'}`;
       level = 'danger';
     } else if (t.status === 'suborbital' && t.centralBody === 'Earth') {
-      text = `WARNING: PERIGEE AT ${Math.round(t.periapsisKm)} KM — ATMOSPHERIC ENTRY IMMINENT`;
+      text = `Atmospheric entry imminent: perigee at ${Math.round(t.periapsisKm)} km`;
       level = 'danger';
     } else if (t.centralBody === 'Earth' && t.periapsisKm < 160 && settings.physics.drag) {
-      text = `WARNING: PERIGEE AT ${Math.round(t.periapsisKm)} KM — RAPID ORBITAL DECAY`;
+      text = `Perigee at ${Math.round(t.periapsisKm)} km: rapid orbital decay`;
     } else if (t.heating > 0.3) {
-      text = 'RE-ENTRY HEATING';
+      text = 'Re-entry heating';
       level = 'danger';
     }
   }
@@ -763,6 +765,24 @@ function onKeyAction(action) {
 
 function onResize() {
   view.setSize(window.innerWidth, window.innerHeight);
+  lastFrameShift = NaN;
+  updateFraming();
+}
+
+/**
+ * When the flight deck is open at the bottom of the screen, shift the camera's
+ * frame up by half its height so the subject sits in the visible area above it.
+ */
+let lastFrameShift = NaN;
+function updateFraming() {
+  const deck = document.querySelector('.deck');
+  const visible = deck && !deck.hidden && deck.offsetParent !== null && window.innerWidth >= 820;
+  const shift = visible ? Math.round(deck.getBoundingClientRect().height / 2) : 0;
+  if (shift === lastFrameShift) return;
+  lastFrameShift = shift;
+  const w = window.innerWidth, h = window.innerHeight, cam = view.camera;
+  if (shift) cam.setViewOffset(w, h, 0, shift, w, h);
+  else cam.clearViewOffset();
 }
 
 // ------------------------------------------------------------------ HUD handlers
@@ -800,7 +820,10 @@ function handlers() {
       else hud.toast?.(`Circularized: Δv ${Math.round(dv)} m/s.`, 'success');
       refreshBodies();
     },
-    onTargetAltitude: (km) => { targetAltKm = Number(km) || targetAltKm; },
+    onTargetAltitude: (km) => {
+      targetAltKm = Number(km) || targetAltKm;
+      try { localStorage.setItem('satalitte-physics:v2:targetAlt', String(targetAltKm)); } catch { /* ignore */ }
+    },
     onCameraMode: (mode) => setCameraMode(mode),
     onSettingChange: (path, value) => applySetting(path, value),
     onReset: () => resetSimulation(),

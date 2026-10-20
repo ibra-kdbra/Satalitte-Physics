@@ -46,6 +46,10 @@ export const icons = {
   book: svg('<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/>'),
   satellite: svg('<rect x="9.5" y="9.5" width="5" height="5" rx="1" transform="rotate(45 12 12)"/><path d="m4 9.5 3.5-3.5 3 3L7 12.5zM20 14.5 16.5 18l-3-3 3.5-3.5z"/><path d="M15.5 15.5 19 19"/>'),
 
+  sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/>'),
+  shadow: svg('<path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/>'),
+  timer: svg('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9.5 2.5h5"/>'),
+
   // Maneuver markers (navball style, monochrome)
   prograde: svg('<circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/><path d="M12 7V2.8M7 12H2.8M17 12h4.2"/>'),
   retrograde: svg('<circle cx="12" cy="12" r="5"/><path d="m8.6 8.6 6.8 6.8M15.4 8.6l-6.8 6.8M12 17v4.2M7 12H2.8M17 12h4.2"/>'),
