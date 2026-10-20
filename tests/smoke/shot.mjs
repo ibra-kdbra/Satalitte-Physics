@@ -1,6 +1,7 @@
 // Headless smoke check: serves the repo over HTTP (like GitHub Pages) and loads a page
 // in Chromium, printing console errors and saving a screenshot.
 // Usage: node tests/smoke/shot.mjs <path-under-repo> <out.png> [waitMs] [width] [height]
+// Env: ACT (script run after waitMs), ACT_WAIT (ms), EVAL (expression printed before the screenshot)
 // Needs Playwright (npm i -g playwright); uses /opt/pw-browsers/chromium when present.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -42,6 +43,11 @@ pg.on('requestfailed', (r) => errors.push(`[requestfailed] ${r.url()}`));
 pg.on('response', (r) => { if (r.status() >= 400) errors.push(`[http ${r.status()}] ${r.url()}`); });
 await pg.goto(`http://localhost:${port}${base}${page}`);
 await pg.waitForTimeout(+wait);
+// Optional scripted scenario: ACT runs in the page, then the tool waits ACT_WAIT ms more.
+if (process.env.ACT) {
+  await pg.evaluate(process.env.ACT);
+  await pg.waitForTimeout(+(process.env.ACT_WAIT || 2000));
+}
 if (process.env.EVAL) console.log('EVAL:', JSON.stringify(await pg.evaluate(process.env.EVAL)));
 await pg.screenshot({ path: out });
 console.log(errors.length ? errors.join('\n') : 'no console errors');

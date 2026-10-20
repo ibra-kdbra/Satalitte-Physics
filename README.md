@@ -44,6 +44,15 @@ Presets include the ISS, Hubble, a sun-synchronous imager, an 18-satellite
 constellation, GPS, geostationary, Molniya, GTO, extreme decay, re-entry,
 Newton's cannon, escape, a lunar transfer and a lunar orbiter.
 
+### Shareable links
+
+| URL option | Effect |
+|---|---|
+| `?preset=iss,geo` | Start with these presets (ids: iss, hubble, sso, constellation, gps, geo, molniya, gto, decay, reentry, cannon, escape, lunar, lunarOrbit) and focus the first |
+| `?empty` | Start with only the Earth and the Moon |
+| `?warp=3600` | Initial time warp (1, 10, 60, 300, 1800, 3600, 21600, 86400) |
+| `?quality=low` | Force graphics quality (low / medium / high) |
+
 ## Project layout
 
 ```

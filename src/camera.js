@@ -128,13 +128,20 @@ export class CameraRig {
     this.controls.update(dt);
   }
 
+  /** Ease the camera offset toward `goal`: direction linearly, distance in log space (any range feels the same). */
+  _approach(goal, k) {
+    const d0 = Math.max(this.chaseOffset.length(), 1e-6), d1 = goal.length();
+    const d = Math.exp(Math.log(d0) + (Math.log(d1) - Math.log(d0)) * k);
+    this.chaseOffset.normalize().lerp(this._dir.copy(goal).normalize(), k).setLength(d);
+  }
+
   /** Looking straight down at the ground track from above the craft; screen-up = direction of flight. */
   _updateNadir(pos, dt) {
     const vel = this.focus.getVelocity(this._v).normalize();
     const up = this._up.copy(pos).normalize();
     const goal = this._goal.copy(up).multiplyScalar(0.65);
     const k = 1 - Math.exp(-dt * 5);
-    this.chaseOffset.lerp(goal, k);
+    this._approach(goal, k);
     this.camera.position.copy(pos).add(this.chaseOffset);
     this.camera.up.lerp(vel, k).normalize();
     this.controls.target.set(0, 0, 0);
@@ -146,13 +153,14 @@ export class CameraRig {
     const vel = this.focus.getVelocity(this._v).normalize();
     const up = this._up.copy(pos).normalize(); // radial out
     // Behind and slightly above the craft, looking past it toward the horizon.
-    // ~1.2 km behind and 0.4 km above: close enough to see the spacecraft model itself.
-    const goal = this._goal.copy(vel).multiplyScalar(-0.0012).addScaledVector(up, 0.0004);
+    // ~350 m behind and 120 m above: close enough to see the spacecraft model itself.
+    const goal = this._goal.copy(vel).multiplyScalar(-0.00035).addScaledVector(up, 0.00012);
     const k = 1 - Math.exp(-dt * 5);
-    this.chaseOffset.lerp(goal, k);
+    this._approach(goal, k);
     this.camera.position.copy(pos).add(this.chaseOffset);
     this.camera.up.lerp(up, k).normalize();
-    this.controls.target.copy(pos).addScaledVector(vel, 0.004).addScaledVector(up, -0.0008);
+    // Aim ahead and below the horizon so the planet's limb fills the lower part of the view.
+    this.controls.target.copy(pos).addScaledVector(vel, 0.002).addScaledVector(up, -0.0011);
     this.camera.lookAt(this.controls.target);
     this.lastFocusPos.copy(pos);
   }

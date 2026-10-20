@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>HUD test bench · SATALITTE // ORBITAL-OS</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../../styles/main.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../../vendor/three/build/three.module.min.js",
+        "three/addons/": "../../vendor/three/addons/",
+        "lil-gui": "../../vendor/lil-gui/lil-gui.esm.min.js"
+      }
+    }
+  </script>
+  <style>
+    /* stand-in for the WebGL scene */
+    #viewport {
+      background:
+        radial-gradient(circle at 50% 52%, #2a6fb8 0 15%, #123a6b 21%, rgba(70, 150, 255, 0.35) 21.6%, transparent 24%),
+        radial-gradient(120% 90% at 70% 30%, #0b1630 0%, #050a14 55%, #02040a 100%);
+    }
+    .fake-label { position: fixed; z-index: 1; }
+  </style>
+</head>
+<body>
+  <div id="viewport"></div>
+  <!-- sample 3D labels so their CSS can be reviewed -->
+  <div class="fake-label" style="left:58%;top:30%"><div class="body-label selected"><span class="dot" style="color:#00e5ff"></span><span class="name">ISS (ZARYA)</span></div></div>
+  <div class="fake-label" style="left:40%;top:40%"><div class="body-label"><span class="dot" style="color:#f472b6"></span><span class="name">Hubble</span></div></div>
+  <div class="fake-label" style="left:44%;top:62%"><div class="body-label dim"><span class="dot" style="color:#94a3b8"></span><span class="name">Shot 7.2 km/s</span></div></div>
+  <div class="fake-label" style="left:63%;top:44%"><div class="body-label orbit-marker"><span class="dot" style="color:#00e5ff"></span><span class="name">PE 402 km</span></div></div>
+  <div class="fake-label" style="left:35%;top:55%"><div class="body-label orbit-marker"><span class="dot" style="color:#f59e0b"></span><span class="name">AP 417 km</span></div></div>
+  <div class="fake-label" style="left:52%;top:70%"><div class="body-label launch-readout"><span class="dot"></span><span class="name">7.84 km/s · 1.02 v꜀</span></div></div>
+  <div id="ui"></div>
+  <div id="loader" class="loader">
+    <div class="loader__card">
+      <div class="loader__brand"><span class="brand-dot" aria-hidden="true"></span><span class="brand-title">SATALITTE // ORBITAL-OS</span></div>
+      <div class="loader__bar" role="progressbar" aria-label="Loading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span class="loader__fill"></span></div>
+      <p class="loader__label">INITIALISING…</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { createHUD } from '../../src/ui/hud.js';
+
+    const params = new URLSearchParams(location.search);
+    const settings = {
+      graphics: { quality: 'high', bloom: true, labels: true, trails: true, trailLength: 2000, orbits: true,
+        markers: true, targetRing: true, clouds: true, atmosphere: true, cityLights: true },
+      physics: { drag: true, j2: true, moonGravity: true, throttle: 100 },
+    };
+    const presets = [
+      { id: 'iss', group: 'Earth orbit', name: 'ISS (LEO)', description: '408 km, 51.6°: a lap every ~92 min. Feels the thin upper atmosphere.' },
+      { id: 'hubble', group: 'Earth orbit', name: 'Hubble', description: '537 km, 28.5°: low inclination, launched from Florida.' },
+      { id: 'sso', group: 'Earth orbit', name: 'Sun-synchronous', description: '786 km, 98.6° dawn–dusk plane.' },
+      { id: 'gps', group: 'Earth orbit', name: 'GPS (MEO)', description: '20,180 km, 55°: two orbits per sidereal day.' },
+      { id: 'gto', group: 'Earth orbit', name: 'GTO', description: 'Geostationary transfer, 250 × 35,786 km.' },
+      { id: 'geo', group: 'Earth orbit', name: 'Geostationary', description: '35,786 km above the equator.' },
+      { id: 'molniya', group: 'Earth orbit', name: 'Molniya', description: 'Highly elliptical, 63.4°: lingers over the far north.' },
+      { id: 'decay', group: 'Special', name: 'Extreme decay', description: '158 × 195 km: drag pulls it down within hours.' },
+      { id: 'cannon', group: 'Special', name: "Newton's cannon", description: 'Five shots fired sideways from a 150 km mountain.' },
+      { id: 'escape', group: 'Special', name: 'Escape', description: 'From 300 km at 105 % of escape speed.' },
+      { id: 'lunar', group: 'Special', name: 'Lunar transfer', description: 'Burn from 200 km to meet the Moon ~5 days later.' },
+    ];
+    const warpSteps = [1, 10, 60, 600, 3600, 21600, 86400];
+
+    const log = (name) => (...args) => console.info(`[handler] ${name}`, ...args);
+    const state = { warpIndex: 3, paused: false, selected: params.get('state') === 'empty' ? null : 'iss', thrusting: new Set() };
+    let hud;
+    const handlers = {
+      onTogglePause: () => { log('onTogglePause')(); state.paused = !state.paused; },
+      onWarp: (i) => { log('onWarp')(i); state.warpIndex = i; },
+      onSelect: (id) => { log('onSelect')(id); state.selected = id; hud.setSelection(id); hud.clearHistory(); },
+      onFocus: log('onFocus'),
+      onDelete: (id) => { log('onDelete')(id); bodies = bodies.filter((b) => b.id !== id); hud.setBodies(bodies); hud.toast(`Deleted ${id}`, 'info'); },
+      onLaunchPreset: (id) => { log('onLaunchPreset')(id); hud.toast(`Launched preset “${id}”`, 'success'); },
+      onLaunchCustom: (p) => { log('onLaunchCustom')(p); hud.toast(`Custom launch at ${p.altitudeKm} km`, 'success'); },
+      onThrustStart: (dir) => { log('onThrustStart')(dir); state.thrusting.add(dir); hud.setThrusting([...state.thrusting]); },
+      onThrustEnd: (dir) => { log('onThrustEnd')(dir); state.thrusting.delete(dir); hud.setThrusting([...state.thrusting]); },
+      onAutopilot: (cmd) => { log('onAutopilot')(cmd); hud.toast(`Autopilot: ${cmd}`, 'info'); },
+      onTargetAltitude: log('onTargetAltitude'),
+      onCameraMode: (m) => { log('onCameraMode')(m); hud.setCameraMode(m); },
+      onSettingChange: log('onSettingChange'),
+      onReset: log('onReset'),
+      onClearDebris: log('onClearDebris'),
+      onResetView: log('onResetView'),
+    };
+
+    hud = createHUD(document.getElementById('ui'), handlers, {
+      settings, presets, warpSteps, mapImage: '../../assets/textures/earth_day_2048.jpg',
+    });
+    window.hud = hud;
+
+    let bodies = [
+      { id: 'earth', name: 'Earth', kind: 'planet', color: '#4a90e2', status: 'orbiting' },
+      { id: 'moon', name: 'Moon', kind: 'moon', color: '#c8c8c8', status: 'orbiting' },
+      { id: 'iss', name: 'ISS (ZARYA)', kind: 'satellite', color: '#00e5ff', status: 'orbiting' },
+      { id: 'hubble', name: 'Hubble', kind: 'satellite', color: '#f472b6', status: 'orbiting' },
+      { id: 'gps', name: 'GPS IIF-12', kind: 'satellite', color: '#a3e635', status: 'orbiting' },
+      { id: 'probe', name: 'Escape probe', kind: 'probe', color: '#a78bfa', status: 'escaping' },
+      { id: 'shot1', name: 'Shot 7.2 km/s', kind: 'debris', color: '#fb923c', status: 'impacted' },
+      { id: 'shot2', name: 'Shot 6.9 km/s', kind: 'debris', color: '#facc15', status: 'suborbital' },
+    ];
+
+    // loading sequence
+    const steps = ['LOADING TEXTURES…', 'BUILDING EARTH…', 'COMPUTING EPHEMERIDES…', 'READY'];
+    steps.forEach((s, i) => setTimeout(() => hud.setLoading((i + 1) / steps.length, s), 80 * i));
+    setTimeout(() => hud.hideLoading(), 400);
+
+    hud.setBodies(bodies);
+    hud.setSelection(state.selected);
+
+    const date = new Date('2026-10-20T14:03:22Z');
+    let sim = 0;
+    let fuel = 412.4;
+    const period = 5560;
+    function telemetry() {
+      const nu = ((sim / period) * 360) % 360;
+      const phase = (nu * Math.PI) / 180;
+      const lat = 51.6 * Math.sin(phase);
+      const lon = ((sim / period) * 360 * 0.93 - 75 + 540) % 360 - 180;
+      return {
+        id: 'iss', name: 'ISS (ZARYA)', kind: 'satellite', color: '#00e5ff', centralBody: 'Earth',
+        altitudeKm: 408.3 + 8 * Math.sin(phase), speedKms: 7.66 - 0.009 * Math.sin(phase), periapsisKm: 401.9, apoapsisKm: 417.2,
+        periodS: 5544.9, eccentricity: 0.00113, inclinationDeg: 51.64, semiMajorAxisKm: 6780.6, specificEnergy: -29.39,
+        raanDeg: 120.0, argpDeg: 45.2, trueAnomalyDeg: nu, flightPathAngleDeg: 0.065 * Math.sin(phase),
+        latitudeDeg: lat, longitudeDeg: lon, status: 'orbiting', dragAccel: 2.1e-6, densityKgM3: 3.1e-12,
+        j2Accel: 0.0123, gravityAccel: 8.68, escapeVelocityKms: 10.84, heating: 0, distanceToMoonKm: 381234,
+        ageS: sim, metS: sim, deltaVUsedMs: 12.5, fuelKg: fuel, maxFuelKg: 420, dvRemainingMs: 2410 * fuel / 420, thrustN: 18000 * (settings.physics.throttle / 100),
+      };
+    }
+    // prefill history so the instruments have something to show
+    for (let i = 0; i < 240; i++) {
+      sim += 25;
+      const t = telemetry();
+      hud.pushHistory({ simTime: sim, altKm: t.altitudeKm, speedKms: t.speedKms, lat: t.latitudeDeg, lon: t.longitudeDeg });
+    }
+    function tick() {
+      sim += state.paused ? 0 : warpSteps[state.warpIndex] / 10;
+      if (state.thrusting.size) fuel = Math.max(0, fuel - 0.2);
+      hud.setTime({ date: new Date(date.getTime() + sim * 1000), warpIndex: state.warpIndex, paused: state.paused, warpLimited: state.warpIndex >= 5 });
+      if (state.selected === 'iss') hud.setTelemetry(telemetry());
+      else if (state.selected) hud.setTelemetry({ ...telemetry(), id: state.selected, name: bodies.find((b) => b.id === state.selected)?.name, kind: bodies.find((b) => b.id === state.selected)?.kind, color: bodies.find((b) => b.id === state.selected)?.color });
+    }
+    tick();
+    setInterval(tick, 100);
+    setInterval(() => {
+      if (state.selected !== 'iss') return;
+      const t = telemetry();
+      hud.pushHistory({ simTime: sim, altKm: t.altitudeKm, speedKms: t.speedKms, lat: t.latitudeDeg, lon: t.longitudeDeg });
+    }, 500);
+
+    if (params.get('alert') !== 'off') hud.setAlert('WARNING: PERIGEE AT 140 KM · RAPID ORBITAL DECAY', params.get('alert') === 'danger' ? 'danger' : 'warn');
+    setTimeout(() => hud.toast('ISS (ZARYA) launched into a 408 km orbit', 'success'), 500);
+    setTimeout(() => hud.toast('Time warp limited near periapsis', 'warn'), 650);
+    hud.setThrusting(params.get('firing') ? ['prograde'] : []);
+  </script>
+</body>
+</html>

@@ -56,10 +56,16 @@ function loadSettings() {
 const saveSettings = () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch { /* ignore */ } };
 const settings = loadSettings();
 
+// URL options (shareable links / testing): ?preset=iss,geo  ?quality=low  ?warp=3600  ?empty
+const params = new URLSearchParams(location.search);
+if (['low', 'medium', 'high'].includes(params.get('quality'))) settings.graphics.quality = params.get('quality');
+const urlPresets = (params.get('preset') || '').split(',').filter(Boolean);
+
 // ------------------------------------------------------------------ state
 
 let sim = new Simulation({ physics: settings.physics });
-let warpIndex = 2;
+let warpIndex = Math.max(0, WARP_STEPS.indexOf(Number(params.get('warp'))));
+if (!params.has('warp')) warpIndex = 2;
 let paused = false;
 let warpLimited = false;
 let selectedId = null;
@@ -163,8 +169,10 @@ async function boot() {
 
   applyAllSettings();
   // A few classic orbits so the first view is alive.
-  for (const id of ['iss', 'gps', 'geo', 'molniya']) launchPreset(id, { quiet: true, select: false });
+  const startPresets = params.has('empty') ? [] : urlPresets.length ? urlPresets : ['iss', 'gps', 'geo', 'molniya'];
+  for (const id of startPresets) launchPreset(id, { quiet: true, select: false });
   select(firstSatelliteId());
+  if (urlPresets.length && selectedId) focusOn(selectedId);
   refreshBodies();
 
   window.addEventListener('resize', onResize);
@@ -332,8 +340,8 @@ function dragToState({ start, end }) {
   if (r0.length() < minR) r0.setLength(minR);
   const vCirc = Math.sqrt(MU_EARTH / r0.length());
   const drag = end.clone().sub(start);
-  // Dragging a quarter of the start radius ≙ circular speed.
-  const speed = vCirc * (drag.length() / (0.25 * start.length()));
+  // Dragging half the start radius ≙ circular speed.
+  const speed = vCirc * (drag.length() / (0.5 * r0.length() * UNIT));
   const v = drag.lengthSq() > 0 ? drag.normalize().multiplyScalar(Math.min(speed, vCirc * 2.2)) : drag;
   return { pos: [r0.x, r0.y, r0.z], vel: [v.x, v.y, v.z], vCirc, speed: v.length() };
 }
@@ -417,7 +425,7 @@ let hudClock = 0;
 let historyClock = -Infinity;
 let orbitTick = 0;
 let lastAlert;
-const tmp = new Vector3(), tmp2 = new Vector3(), sunDir = new Vector3(), moonRender = new Vector3();
+const tmp = new Vector3(), tmp2 = new Vector3(), tmp3 = new Vector3(), sunDir = new Vector3(), moonRender = new Vector3();
 const orbitBuf = new Float32Array(ORBIT_SEGMENTS * 3);
 
 function frame(now) {
@@ -459,7 +467,8 @@ function frame(now) {
     const p = toRender(sat.pos, tmp);
     const vel = toVec3(sim.relativeState(sat).v, tmp2).normalize();
     const thrusting = sat._thrusting ? toVec3(sat.thrustDirWorld, new Vector3()) : null;
-    e.visual.update({ position: p, velocityDir: vel, camera: view.camera, heating: sat.heating, selected: sat.id === selectedId, sunDir, thrustDir: thrusting, viewportHeight: window.innerHeight });
+    const riding = rig.mode !== 'orbit' && sat.id === selectedId; // chase / nadir: no ring around our own craft
+    e.visual.update({ position: p, velocityDir: vel, camera: view.camera, heating: sat.heating, selected: sat.id === selectedId && !riding, sunDir, thrustDir: thrusting, viewportHeight: window.innerHeight });
     e.anchor.position.copy(p);
     pushTrail(e.trail, p, e);
     if (settings.graphics.orbits && (sat.id === selectedId || (orbitTick + e.orbitFrame++) % 4 === 0 || sat.central === 'moon')) {
@@ -473,11 +482,37 @@ function frame(now) {
     if (!flashes[i].update(dt)) { flashes[i].dispose?.(); flashes.splice(i, 1); }
   }
 
+  hideOccludedLabels();
   sky.update({ sunDir, camera: view.camera });
   view.render();
 
   hudClock += dt;
   if (hudClock >= HUD_INTERVAL) { hudClock = 0; updateHud(); }
+}
+
+/** Is the point hidden from the camera behind the Earth or the Moon? */
+function occluded(p) {
+  const cam = view.camera.position;
+  const d = cam.distanceTo(p);
+  const dir = tmp2.subVectors(p, cam).divideScalar(d);
+  for (const [c, r] of [[ORIGIN, R_EARTH * UNIT], [moonRender, R_MOON * UNIT]]) {
+    const oc = tmp3.subVectors(c, cam);
+    const along = oc.dot(dir);
+    if (along <= 0 || along >= d) continue;
+    if (oc.lengthSq() - along * along < r * r * 0.995 && c.distanceTo(p) > r * 1.001) return true;
+  }
+  return false;
+}
+
+/** CSS labels are drawn on top of everything; hide those whose anchor is behind a planet. */
+function hideOccludedLabels() {
+  const vis = settings.graphics.labels;
+  moonAnchor.visible = vis && !occluded(moonRender);
+  for (const e of entities.values()) {
+    const riding = rig.mode !== 'orbit' && e.sat.id === selectedId;
+    e.label.visible = vis && !riding && !occluded(e.anchor.position);
+  }
+  for (const l of Object.values(markerLabels)) if (l.visible && occluded(l.position)) l.visible = false;
 }
 
 /** Add a trail point once the object has moved far enough (keeps trails smooth at any warp). */
@@ -540,12 +575,15 @@ function nodePoints(el) {
 function updateSelectionOverlays() {
   const e = selectedId && entities.get(selectedId);
   const alive = e?.sat.alive;
-  const showMarkers = !!(alive && settings.graphics.markers && settings.graphics.labels);
   for (const l of Object.values(markerLabels)) l.visible = false;
   targetRing.setVisible(false);
   if (!alive) return;
   const { el, central, radius } = sim.orbitOf(e.sat);
   const o = central === 'moon' ? moonRender : ORIGIN;
+  // Text tags only when the orbit is big enough on screen to keep them readable.
+  const size = Math.min(Number.isFinite(el.a) && el.a > 0 ? el.a : el.periapsis * 3, ESCAPE_DISTANCE) * UNIT;
+  const showMarkers = !!(settings.graphics.markers && settings.graphics.labels
+    && size / view.camera.position.distanceTo(o) > 0.3);
   if (showMarkers) {
     const { peri, apo } = apsides(el);
     const nodes = nodePoints(el);
@@ -770,4 +808,4 @@ function handlers() {
 }
 
 // Debug handle for the console and automated smoke tests.
-window.__satalitte = { get sim() { return sim; }, entities, settings, select, focusOn, launchPreset, setCameraMode, get rig() { return rig; } };
+window.__satalitte = { get sim() { return sim; }, entities, settings, select, focusOn, launchPreset, setCameraMode, get rig() { return rig; }, get input() { return input; }, get previewLabel() { return previewLabel; } };
