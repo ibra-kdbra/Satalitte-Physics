@@ -389,8 +389,8 @@ function handleEvents(events) {
       if (ev.body === 'earth') {
         earth.addImpactMarker(toVec3(ev.localDir), color);
       } else {
-        moon.group.updateMatrixWorld(true);
-        const local = moon.group.worldToLocal(pos.clone()).normalize();
+        moon.surface.updateMatrixWorld(true);
+        const local = moon.surface.worldToLocal(pos.clone()).normalize(); // Moon body frame (tidally locked)
         moon.addImpactMarker(local, color);
       }
       e.visual.object.visible = false;
@@ -459,7 +459,7 @@ function frame(now) {
     const p = toRender(sat.pos, tmp);
     const vel = toVec3(sim.relativeState(sat).v, tmp2).normalize();
     const thrusting = sat._thrusting ? toVec3(sat.thrustDirWorld, new Vector3()) : null;
-    e.visual.update({ position: p, velocityDir: vel, camera: view.camera, heating: sat.heating, selected: sat.id === selectedId, sunDir, thrustDir: thrusting });
+    e.visual.update({ position: p, velocityDir: vel, camera: view.camera, heating: sat.heating, selected: sat.id === selectedId, sunDir, thrustDir: thrusting, viewportHeight: window.innerHeight });
     e.anchor.position.copy(p);
     pushTrail(e.trail, p, e);
     if (settings.graphics.orbits && (sat.id === selectedId || (orbitTick + e.orbitFrame++) % 4 === 0 || sat.central === 'moon')) {
@@ -636,7 +636,7 @@ function applySetting(path, value) {
   saveSettings();
   if (group === 'physics') { sim.physics[key] = value; return; }
   switch (key) {
-    case 'quality': view.setQuality(value); break;
+    case 'quality': view.setQuality(value); view.setBloom(settings.graphics.bloom); break; // setQuality resets bloom
     case 'bloom': view.setBloom(value); break;
     case 'labels':
       for (const e of entities.values()) e.label.visible = value;

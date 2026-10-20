@@ -45,7 +45,8 @@ export class CameraRig {
   setFocus(focus, { distance, instant = false } = {}) {
     this.focus = focus;
     focus.getPosition(this._p);
-    const minD = focus.kind === 'planet' || focus.kind === 'moon' ? focus.radius * 1.12 : 0.004;
+    // Spacecraft models are ~60 m across: allow zooming to a few hundred metres.
+    const minD = focus.kind === 'planet' || focus.kind === 'moon' ? focus.radius * 1.12 : 0.0003;
     this.controls.minDistance = minD;
     const d1 = distance ?? CameraRig.viewDistance(focus.radius, focus.kind);
     if (instant) {
@@ -145,12 +146,13 @@ export class CameraRig {
     const vel = this.focus.getVelocity(this._v).normalize();
     const up = this._up.copy(pos).normalize(); // radial out
     // Behind and slightly above the craft, looking past it toward the horizon.
-    const goal = this._goal.copy(vel).multiplyScalar(-0.22).addScaledVector(up, 0.07);
+    // ~1.2 km behind and 0.4 km above: close enough to see the spacecraft model itself.
+    const goal = this._goal.copy(vel).multiplyScalar(-0.0012).addScaledVector(up, 0.0004);
     const k = 1 - Math.exp(-dt * 5);
     this.chaseOffset.lerp(goal, k);
     this.camera.position.copy(pos).add(this.chaseOffset);
     this.camera.up.lerp(up, k).normalize();
-    this.controls.target.copy(pos).addScaledVector(vel, 0.4).addScaledVector(up, -0.05);
+    this.controls.target.copy(pos).addScaledVector(vel, 0.004).addScaledVector(up, -0.0008);
     this.camera.lookAt(this.controls.target);
     this.lastFocusPos.copy(pos);
   }

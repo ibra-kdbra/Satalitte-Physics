@@ -1,0 +1,123 @@
+// WebGL2 renderer, scene, camera, label layer and (optional) bloom chain.
+//
+// Budget notes
+//   high   : pixelRatio <= 2,   bloom at 1/2 res of the drawing buffer
+//   medium : pixelRatio <= 1.5, bloom at 1/3 res
+//   low    : pixelRatio 1,      bloom off by default (plain render, no FBO)
+// When bloom is off we render straight to the canvas (MSAA from the context);
+// every custom shader includes the tonemapping/colorspace chunks so both paths
+// look identical apart from the glow.
+import {
+  WebGLRenderer, Scene, PerspectiveCamera, ACESFilmicToneMapping, SRGBColorSpace,
+  Vector2, HalfFloatType, WebGLRenderTarget,
+} from 'three';
+import { CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const QUALITY = {
+  high: { maxPixelRatio: 2, bloomScale: 0.5, bloom: true },
+  medium: { maxPixelRatio: 1.5, bloomScale: 0.34, bloom: true },
+  low: { maxPixelRatio: 1, bloomScale: 0.25, bloom: false },
+};
+
+export function createRenderer(container, { quality = 'high' } = {}) {
+  let q = QUALITY[quality] ? quality : 'high';
+
+  const renderer = new WebGLRenderer({
+    antialias: q !== 'low',
+    logarithmicDepthBuffer: true, // scene spans 1e-4 .. 2e5 units
+    powerPreference: 'high-performance',
+    alpha: false,
+    stencil: false,
+  });
+  renderer.toneMapping = ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  renderer.outputColorSpace = SRGBColorSpace;
+  renderer.setClearColor(0x000000, 1);
+  renderer.domElement.style.display = 'block';
+  container.appendChild(renderer.domElement);
+
+  const scene = new Scene();
+  const camera = new PerspectiveCamera(45, 1, 1e-4, 2e5);
+
+  const labelRenderer = new CSS2DRenderer();
+  const ls = labelRenderer.domElement.style;
+  ls.position = 'absolute';
+  ls.top = '0';
+  ls.left = '0';
+  ls.pointerEvents = 'none';
+  container.appendChild(labelRenderer.domElement);
+
+  let width = Math.max(1, container.clientWidth || window.innerWidth);
+  let height = Math.max(1, container.clientHeight || window.innerHeight);
+  let bloomEnabled = QUALITY[q].bloom;
+  let composer = null;
+  let bloomPass = null;
+
+  function pixelRatio() {
+    return Math.min(window.devicePixelRatio || 1, QUALITY[q].maxPixelRatio);
+  }
+
+  // Composer is built lazily so 'low' never allocates the HDR targets.
+  // No MSAA on the target: the Lensflare addon copies pixels out of the
+  // framebuffer, which is illegal on a multisampled FBO.
+  function ensureComposer() {
+    if (composer) return;
+    const target = new WebGLRenderTarget(1, 1, { type: HalfFloatType });
+    composer = new EffectComposer(renderer, target);
+    composer.addPass(new RenderPass(scene, camera));
+    // strength, radius, threshold: high threshold so only HDR (>1) pixels glow
+    bloomPass = new UnrealBloomPass(new Vector2(256, 256), 0.55, 0.45, 0.92);
+    const baseSetSize = bloomPass.setSize.bind(bloomPass);
+    bloomPass.setSize = (w, h) => baseSetSize(
+      Math.max(32, Math.round(w * QUALITY[q].bloomScale * 2)),
+      Math.max(32, Math.round(h * QUALITY[q].bloomScale * 2)),
+    ); // UnrealBloomPass already halves internally
+    composer.addPass(bloomPass);
+    composer.addPass(new OutputPass());
+    composer.setPixelRatio(pixelRatio());
+    composer.setSize(width, height);
+  }
+
+  function setSize(w, h) {
+    width = Math.max(1, w | 0);
+    height = Math.max(1, h | 0);
+    renderer.setPixelRatio(pixelRatio());
+    renderer.setSize(width, height);
+    labelRenderer.setSize(width, height);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    if (composer) {
+      composer.setPixelRatio(pixelRatio());
+      composer.setSize(width, height);
+    }
+  }
+
+  function setBloom(enabled) {
+    bloomEnabled = !!enabled;
+    if (bloomEnabled) ensureComposer();
+  }
+
+  // Sets pixel ratio + bloom resolution, and resets bloom to the quality's
+  // default (call setBloom afterwards to override with the user's choice).
+  function setQuality(next) {
+    if (!QUALITY[next]) return;
+    q = next;
+    setBloom(QUALITY[q].bloom);
+    setSize(width, height);
+  }
+
+  function render() {
+    if (bloomEnabled && composer) composer.render();
+    else renderer.render(scene, camera);
+    labelRenderer.render(scene, camera);
+  }
+
+  setBloom(bloomEnabled);
+  setSize(width, height);
+
+  return { renderer, scene, camera, labelRenderer, setSize, setBloom, setQuality, render };
+}
