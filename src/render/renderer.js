@@ -11,7 +11,7 @@ import {
   WebGLRenderer, Scene, PerspectiveCamera, ACESFilmicToneMapping, SRGBColorSpace,
   Vector2, HalfFloatType, WebGLRenderTarget,
 } from 'three';
-import { CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
+import { LabelRenderer } from './labels.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -51,7 +51,7 @@ export function createRenderer(container, { quality = 'high', software = 'auto' 
   const scene = new Scene();
   const camera = new PerspectiveCamera(45, 1, 1e-4, 2e5);
 
-  const labelRenderer = new CSS2DRenderer();
+  const labelRenderer = new LabelRenderer(); // CSS2DRenderer-compatible, writes the DOM only on change
   const ls = labelRenderer.domElement.style;
   ls.position = 'absolute';
   ls.top = '0';
@@ -64,9 +64,10 @@ export function createRenderer(container, { quality = 'high', software = 'auto' 
   let bloomEnabled = QUALITY[q].bloom;
   let composer = null;
   let bloomPass = null;
+  let resScale = 1; // adaptive resolution: fraction of the quality's pixel ratio
 
   function pixelRatio() {
-    return Math.min(window.devicePixelRatio || 1, QUALITY[q].maxPixelRatio);
+    return Math.min(window.devicePixelRatio || 1, QUALITY[q].maxPixelRatio) * resScale;
   }
 
   // Composer is built lazily so 'low' never allocates the HDR targets. The
@@ -118,17 +119,48 @@ export function createRenderer(container, { quality = 'high', software = 'auto' 
     setSize(width, height);
   }
 
-  function render() {
+  /** Scale the drawing buffer (and the bloom targets) to `s` × the quality's pixel ratio. */
+  function setResolutionScale(s) {
+    const next = Math.min(1, Math.max(0.25, s));
+    if (Math.abs(next - resScale) < 1e-4) return;
+    resScale = next;
+    setSize(width, height);
+  }
+
+  function renderScene() {
     if (bloomEnabled && composer) composer.render();
     else renderer.render(scene, camera);
-    labelRenderer.render(scene, camera);
+  }
+
+  function renderLabels() { labelRenderer.render(scene, camera); }
+
+  /**
+   * Compile the scene's shaders for the target the next frame draws into,
+   * without blocking the page. Only where the driver compiles in parallel
+   * (KHR_parallel_shader_compile); elsewhere the first frame compiles them.
+   */
+  async function compile() {
+    if (!renderer.extensions.has('KHR_parallel_shader_compile')) return;
+    const prev = renderer.getRenderTarget();
+    if (bloomEnabled && composer) renderer.setRenderTarget(composer.readBuffer); // render-target program variants
+    let done;
+    try { done = renderer.compileAsync(scene, camera); } finally { renderer.setRenderTarget(prev); }
+    await done;
+  }
+
+  function render() {
+    renderScene();
+    renderLabels();
   }
 
   setBloom(bloomEnabled);
   setSize(width, height);
   initSpacecraftEnvironment(renderer, { software: softwareGL }); // PBR reflections for spacecraft
 
-  return { renderer, scene, camera, labelRenderer, setSize, setBloom, setQuality, render };
+  return {
+    renderer, scene, camera, labelRenderer, setSize, setBloom, setQuality, render, renderScene, renderLabels, compile,
+    setResolutionScale, getResolutionScale: () => resScale, softwareGL,
+  };
 }
 
 /** True on software rasterisers (SwiftShader, llvmpipe): no GPU, so keep every cost minimal. */

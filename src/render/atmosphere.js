@@ -53,22 +53,27 @@ vec2 aRaySphere(vec3 ro, vec3 rd, float r) {
 }
 
 // Column density along a ray to infinity, in scale heights, times exp(-h).
-// X = R/H, h = altitude/H, mu = cos(zenith angle of the ray).
-float aChapman(float X, float h, float mu) {
+// X = R/H, h = altitude/H, mu = cos(zenith angle of the ray); eh = exp(-h),
+// passed in because the ray marcher already has it (the local density).
+float aChapman(float X, float h, float mu, float eh) {
   float c = sqrt(X + h);
-  if (mu >= 0.0) return c / (c * mu + 1.0) * exp(-h);
+  if (mu >= 0.0) return c / (c * mu + 1.0) * eh;
   float x0 = sqrt(max(1.0 - mu * mu, 0.0)) * (X + h);
   float c0 = sqrt(x0);
-  return 2.0 * c0 * exp(min(X - x0, 60.0)) - c / (1.0 - c * mu) * exp(-h);
+  return 2.0 * c0 * exp(min(X - x0, 60.0)) - c / (1.0 - c * mu) * eh;
 }
 
-// Optical depth from radius r towards the Sun (mu = cos sun zenith there).
-vec3 aSunDepth(float r, float mu) {
-  float hR = (r - A_PR) / A_HR;
-  float hM = (r - A_PR) / A_HM;
-  float cR = aChapman(A_PR / A_HR, hR, mu) * A_HR;
-  float cM = aChapman(A_PR / A_HM, hM, mu) * A_HM;
+// Optical depth from radius r towards the Sun (mu = cos sun zenith there);
+// dens = (exp(-hR), exp(-hM)), the Rayleigh and Mie density at r.
+vec3 aSunDepth(float r, float mu, vec2 dens) {
+  vec2 h = vec2(r - A_PR) / vec2(A_HR, A_HM);
+  float cR = aChapman(A_PR / A_HR, h.x, mu, dens.x) * A_HR;
+  float cM = aChapman(A_PR / A_HM, h.y, mu, dens.y) * A_HM;
   return (A_BR + A_BO) * cR + A_BME * cM;
+}
+
+vec3 aSunDepth(float r, float mu) {
+  return aSunDepth(r, mu, exp(-vec2(r - A_PR) / vec2(A_HR, A_HM)));
 }
 
 vec3 aSunTransmittance(float r, float mu) { return exp(-aSunDepth(r, mu)); }
@@ -96,9 +101,14 @@ vec3 aScatter(vec3 ro, vec3 rd, float t0, float t1, vec3 L, out vec3 T) {
     vec3 p = ro + rd * (tPrev + 0.5 * dt);
     float r = length(p);
     vec2 dens = exp(-max(r - A_PR, 0.0) / vec2(A_HR, A_HM));
+    // Above the ground the density is also the exp(-h) the sun-depth Chapman
+    // terms need (saves two exp per step); below it (a mesh vertex can dip
+    // under the true sphere) they need the unclamped value.
+    vec2 eh = dens;
+    if (r < A_PR) eh = exp(-vec2(r - A_PR) / vec2(A_HR, A_HM));
     vec2 odMid = od + dens * (0.5 * dt);
     od += dens * dt;
-    vec3 tau = (A_BR + A_BO) * odMid.x + A_BME * odMid.y + aSunDepth(r, dot(p, L) / r);
+    vec3 tau = (A_BR + A_BO) * odMid.x + A_BME * odMid.y + aSunDepth(r, dot(p, L) / r, eh);
     vec3 att = exp(-tau);
     sumR += att * (dens.x * dt);
     sumM += att * (dens.y * dt);

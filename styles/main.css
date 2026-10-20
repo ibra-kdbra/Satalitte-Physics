@@ -1031,3 +1031,29 @@ input.num:disabled { opacity: 0.4; }
   .panel, .topbar, .deck, .toast, .popover, .guide, .modal__dialog { border: 1px solid CanvasText; }
   .seg__btn[aria-pressed="true"], .obj.is-selected, .burn.firing, .ltab[aria-selected="true"] { outline: 2px solid Highlight; }
 }
+
+/* ======================================================= perf overlay (?perf=1) */
+.perf-overlay {
+  position: fixed;
+  top: var(--dock-top);
+  right: calc(var(--dock-w) + var(--gutter) * 2);
+  z-index: 15;
+  display: grid;
+  grid-template-columns: repeat(2, auto auto);
+  column-gap: var(--s3);
+  row-gap: 1px;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-3);
+  font: 400 11px/1.35 var(--font-num);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+}
+.perf-overlay__row { display: contents; }
+.perf-overlay__val { min-width: 6ch; color: var(--text-2); text-align: right; }
+@media (max-width: 819px) {
+  .perf-overlay { right: var(--gutter); }
+}

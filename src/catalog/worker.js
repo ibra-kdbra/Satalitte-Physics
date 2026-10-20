@@ -4,7 +4,9 @@
 // Messages in:
 //   { type: 'add', group, records }      parse OMM records (array) for a group
 //   { type: 'visible', groups }          ids of the groups to propagate
-//   { type: 'propagate', ms, seq }       state of all visible objects at Unix time ms
+//   { type: 'propagate', ms, seq, pos?, vel? }  state of all visible objects at Unix time ms;
+//                                        pos/vel: the previous snapshot's arrays, transferred
+//                                        back for reuse (ping-pong, no allocation per snapshot)
 // Messages out:
 //   { type: 'added', group, start, count, meta, kept }   meta: [{ name, norad, intl, epochMs }],
 //                                                  kept: indices of the records that parsed
@@ -35,8 +37,9 @@ self.onmessage = (e) => {
     visible = new Set(msg.groups);
   } else if (msg.type === 'propagate') {
     const n = sats.length;
-    const pos = new Float32Array(n * 3).fill(NaN);
-    const vel = new Float32Array(n * 3).fill(NaN);
+    const reuse = msg.pos && msg.pos.length === n * 3 && msg.vel && msg.vel.length === n * 3;
+    const pos = reuse ? msg.pos.fill(NaN) : new Float32Array(n * 3).fill(NaN);
+    const vel = reuse ? msg.vel.fill(NaN) : new Float32Array(n * 3).fill(NaN);
     for (let i = 0; i < n; i++) {
       const s = sats[i];
       if (!visible.has(s.group) || !propagateWorld(s.satrec, msg.ms, p, v)) continue;

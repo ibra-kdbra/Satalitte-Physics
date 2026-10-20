@@ -7,6 +7,13 @@
 // sim time at which they are expected to arrive (measured worker latency ×
 // warp), so even at high warp the remaining linear step stays short. Selected
 // objects use an exact SGP4 evaluation on the main thread via `stateOf`.
+//
+// Cost control: the snapshot buffers ping-pong between the threads (each
+// request transfers the previous snapshot's arrays back for reuse, so no
+// 2 × 12 bytes × n allocation per snapshot); a new snapshot is only requested
+// once the current one is SNAPSHOT_REFRESH_MS of sim time old (the renderer
+// extrapolates in between: < 2 m of error for LEO), and while the simulation
+// is paused none is requested once the current one is exact.
 
 import { epochMs, propagateWorld, satrecFromOmm } from './sgp4.js';
 
@@ -21,6 +28,8 @@ const FALLBACK_GROUPS = [
 // Linear motion along the velocity is only trusted over short gaps (a LEO
 // satellite turns ~4° per minute); beyond this the last snapshot is held.
 const MAX_EXTRAPOLATION_S = 60;
+// Sim time a snapshot is used for before a fresh one is requested (½·a·t² ≈ 1 m in LEO).
+const SNAPSHOT_REFRESH_MS = 500;
 
 export class Catalog {
   /**
@@ -40,6 +49,8 @@ export class Catalog {
     this.busy = false;
     this.latencyMs = 0;
     this.requestedMs = NaN;
+    this._dirty = true;        // visibility or content changed since the last snapshot request
+    this._spare = null;        // arrays of the previous snapshot, handed back to the worker
     this._satrecs = new Map();
     this._pendingAdds = new Map(); // group id → load waiting for the worker's 'added' reply
     this._startWorker();
@@ -88,6 +99,7 @@ export class Catalog {
     if (on && !g.loaded && !g.loading) await this._load(g);
     this.worker?.postMessage({ type: 'visible', groups: [...this.groups.values()].filter((x) => x.visible && x.loaded).map((x) => x.id) });
     this.requestedMs = NaN; // refresh at the next update
+    this._dirty = true;
     this.onChange();
   }
 
@@ -152,6 +164,8 @@ export class Catalog {
       // Smoothed round-trip time, used to lead the next request.
       const rt = performance.now() - this._sentAt;
       this.latencyMs = this.latencyMs ? this.latencyMs * 0.8 + rt * 0.2 : rt;
+      // The previous snapshot's arrays go back to the worker with the next request.
+      if (this.snapshot) this._spare = this.snapshot;
       this.snapshot = { ms: msg.ms, pos: msg.pos, vel: msg.vel, count: msg.count };
     }
   }
@@ -164,11 +178,27 @@ export class Catalog {
     if (!this.objects.length) return;
     if (this.worker) {
       if (this.busy) return;
+      if (!this._dirty && this.snapshot) {
+        // Paused: the snapshot taken at exactly this time is still exact.
+        if (rate === 0 && this.snapshot.ms === ms) return;
+        // Running: a recent snapshot is extrapolated by the renderer.
+        if (rate !== 0 && Math.abs(ms - this.snapshot.ms) < SNAPSHOT_REFRESH_MS) return;
+      }
       this.busy = true;
+      this._dirty = false;
       this._sentAt = performance.now();
+      this.requestedMs = ms;
       // Aim at the sim time when the answer will be on screen.
       const lead = rate * this.latencyMs;
-      this.worker.postMessage({ type: 'propagate', ms: ms + lead, seq: ++this.seq });
+      const msg = { type: 'propagate', ms: ms + lead, seq: ++this.seq };
+      const spare = this._spare;
+      this._spare = null;
+      if (spare && spare.pos.buffer.byteLength && spare.vel.buffer.byteLength) {
+        msg.pos = spare.pos; msg.vel = spare.vel;
+        this.worker.postMessage(msg, [spare.pos.buffer, spare.vel.buffer]);
+      } else {
+        this.worker.postMessage(msg);
+      }
       return;
     }
     // Fallback: propagate everything visible every ~10 frames.
@@ -212,11 +242,14 @@ export class Catalog {
     return rec;
   }
 
-  /** Exact SGP4 state (km, km/s, world frame) of one object at `ms`, or null. */
-  stateOf(index, ms) {
+  /**
+   * Exact SGP4 state (km, km/s, world frame) of one object at `ms`, or null.
+   * Pass `out` ({ pos, vel } arrays) to reuse it instead of allocating.
+   */
+  stateOf(index, ms, out = null) {
     const rec = this._satrec(index);
-    const pos = [0, 0, 0], vel = [0, 0, 0];
-    return rec && propagateWorld(rec, ms, pos, vel) ? { pos, vel } : null;
+    const s = out || { pos: [0, 0, 0], vel: [0, 0, 0] };
+    return rec && propagateWorld(rec, ms, s.pos, s.vel) ? s : null;
   }
 
   /** Case-insensitive search by name, NORAD id or international designator. */

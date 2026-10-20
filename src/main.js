@@ -15,14 +15,14 @@ import { createLabel } from './render/labels.js';
 import { createLaunchPreview } from './render/launchPreview.js';
 import { createEquatorGrid } from './render/grid.js';
 import { CatalogPoints } from './render/catalogPoints.js';
-import { Catalog } from './catalog/catalog.js';
 import { createHUD } from './ui/hud.js';
 import { CameraRig } from './camera.js';
 import { Input } from './input.js';
 import { Simulation } from './physics/simulation.js';
 import { PRESETS, customLaunch, nextColor } from './physics/presets.js';
-import { apsides, elementsFromState, sampleConic } from './physics/orbit.js';
-import { ESCAPE_DISTANCE, MU_EARTH, MU_MOON, R_EARTH, R_MOON } from './physics/constants.js';
+import { elementsFromState, sampleConic } from './physics/orbit.js';
+import { ESCAPE_DISTANCE, MOON_SOI, MU_EARTH, MU_MOON, R_EARTH, R_MOON } from './physics/constants.js';
+import { AdaptiveResolution } from './render/adaptive.js';
 
 const UNIT = 1 / 1000;                 // km → render units
 const WARP_STEPS = [1, 10, 60, 300, 1800, 3600, 21600, 86400];
@@ -95,6 +95,9 @@ const uiThrust = new Set();
 let lastThrustKey = '';
 const entities = new Map();   // id → { sat, visual, trail, orbit, anchor, label, last }
 const flashes = [];
+let perf = null;              // ?perf=1: stage timings + overlay (src/ui/perf.js)
+const WAKE_MS = 700;          // render on demand: keep drawing this long after a change
+let wakeUntil = 0;
 
 const hud = createHUD(document.getElementById('ui'), handlers(), {
   settings,
@@ -107,7 +110,11 @@ const hud = createHUD(document.getElementById('ui'), handlers(), {
 let view, earth, moon, sky, grid, rig, input, launchPreview, previewLine, targetRing;
 let catalog, catalogPoints;
 // The selected real satellite: exact SGP4 state each frame, plus its own model, label and orbit.
-const real = { id: null, index: -1, obj: null, state: null, visual: null, anchor: null, label: null, orbit: null };
+const real = {
+  id: null, index: -1, obj: null, state: null, visual: null, anchor: null, label: null, orbit: null,
+  buf: { pos: [0, 0, 0], vel: [0, 0, 0] }, stateMs: NaN, orbitMs: NaN, // reused SGP4 state, its time, the drawn orbit's time
+};
+let adaptive = null;          // adaptive resolution controller (src/render/adaptive.js)
 const coloredGroups = new Set();
 let moonTrail, moonOrbitLine, moonAnchor, earthAnchor, previewLabel;
 const markerLabels = {};
@@ -124,11 +131,14 @@ async function boot() {
   }
   hud.setLoading?.(0.02, 'Starting renderer');
   const container = document.getElementById('viewport');
-  view = createRenderer(container, { quality: settings.graphics.quality });
+  // ?software=0|1 forces the GPU / CPU-rasteriser code paths (benchmarking); default: detected.
+  const software = params.get('software') === '1' ? true : params.get('software') === '0' ? false : 'auto';
+  view = createRenderer(container, { quality: settings.graphics.quality, software });
   view.setBloom(settings.graphics.bloom);
 
   const textures = await loadTextures(view.renderer, {
     quality: settings.graphics.quality,
+    software: view.softwareGL, // already known: no second synchronous GL query
     onProgress: (f, label) => hud.setLoading?.(0.05 + f * 0.85, label || 'Loading textures'),
   });
   hud.setLoading?.(0.92, 'Building the Earth–Moon system');
@@ -184,8 +194,6 @@ async function boot() {
   scene.add(real.orbit.object);
   real.anchor = new Object3D();
   scene.add(real.anchor);
-  catalog = new Catalog({ basePath: params.get('satdata') || './data/satellites/', onChange: onCatalogChange });
-  catalog.init().then(restoreCatalogGroups).catch((err) => console.warn('Satellite catalogue:', err));
 
   rig = new CameraRig(camera, view.renderer.domElement);
   rig.colliders = () => [[ORIGIN, R_EARTH * UNIT], [moonRender, R_MOON * UNIT]];
@@ -206,6 +214,11 @@ async function boot() {
 
   applyAllSettings();
   hud.setTargetAltitude?.(targetAltKm);
+  if (params.has('perf') && params.get('perf') !== '0') {
+    const { createPerfMonitor } = await import('./ui/perf.js');
+    perf = createPerfMonitor(document.body);
+    view.renderer.info.autoReset = false; // count every pass of a frame (bloom included)
+  }
   // A few classic orbits so the first view is alive.
   const startPresets = params.has('empty') ? [] : urlPresets.length ? urlPresets : ['iss', 'gps', 'geo', 'molniya'];
   for (const id of startPresets) launchPreset(id, { quiet: true, select: false });
@@ -214,11 +227,33 @@ async function boot() {
   refreshBodies();
 
   window.addEventListener('resize', onResize);
+  document.addEventListener('visibilitychange', onVisibility);
+  // Any input wakes the renderer at once (render on demand while paused).
+  for (const type of ['pointerdown', 'pointermove', 'pointerup', 'wheel', 'keydown', 'keyup', 'touchstart', 'touchmove', 'input', 'change']) {
+    window.addEventListener(type, () => wake(), { capture: true, passive: true });
+  }
+  adaptive = createAdaptive();
   onResize();
+  // Compile every shader before the first frame, without blocking the page
+  // (parallel compilation where the driver offers it).
+  hud.setLoading?.(0.96, 'Preparing shaders');
+  await view.compile();
   hud.setLoading?.(1, 'Ready');
   hud.hideLoading?.();
   hud.toast?.('Right-drag in space (Shift+drag, or long-press on touch) to launch your own satellite.', 'info');
-  requestAnimationFrame(frame);
+  rafId = requestAnimationFrame((now) => { performance.mark('satalitte:first-frame'); frame(now); setTimeout(startCatalog, 0); });
+}
+
+/** Real satellites: loaded after the first frame, so they never delay it. */
+async function startCatalog() {
+  try {
+    const { Catalog } = await import('./catalog/catalog.js');
+    catalog = new Catalog({ basePath: params.get('satdata') || './data/satellites/', onChange: onCatalogChange });
+    await catalog.init();
+    await restoreCatalogGroups();
+  } catch (err) {
+    console.warn('Satellite catalogue:', err);
+  }
 }
 
 function webglAvailable() {
@@ -261,8 +296,7 @@ function bodyFocus(id) {
     kind: e.sat.kind, radius: 0.001,
     getPosition: (out) => toRender(e.sat.pos, out),
     getVelocity: (out) => {
-      const rel = sim.relativeState(e.sat).v;
-      return toVec3(rel, out);
+      return relVelocity(e.sat, out);
     },
     getCentral: (out) => (e.sat.central === 'moon' ? out.copy(moonRender) : out.set(0, 0, 0)),
   };
@@ -277,9 +311,9 @@ function getPickables() {
     if (e.sat.alive) list.push({ id: e.sat.id, kind: e.sat.kind, radius: 0, position: toRender(e.sat.pos) });
   }
   // Real satellites, from the positions just drawn (only built on a click).
-  if (catalogPoints?.object.visible) {
-    const pos = catalogPoints.positions;
-    const n = catalogPoints.geometry.drawRange.count;
+  if (catalogPoints?.object.visible && catalog) {
+    const pos = catalogPoints.positions; // the GPU extrapolates the points: compute them here
+    const n = catalog.positionsAt(sim.dateMs, pos, UNIT);
     for (let i = 0; i < n; i++) {
       const x = pos[i * 3];
       if (x === x) list.push({ id: `${CAT}${i}`, kind: 'real', radius: 0, position: new Vector3(x, pos[i * 3 + 1], pos[i * 3 + 2]) });
@@ -307,7 +341,8 @@ function addEntity(sat) {
   label.visible = settings.graphics.labels;
   anchor.add(label);
   view.scene.add(anchor);
-  const e = { sat, visual, trail, orbit, anchor, label, last: toRender(sat.pos), orbitFrame: 0 };
+  const e = { sat, visual, trail, orbit, anchor, label, last: toRender(sat.pos), thrustVec: new Vector3(), orbitCentral: 'earth', lineVersion: -1, lineMarks: false };
+  orbitPending.add(e);
   trail.push(e.last.x, e.last.y, e.last.z);
   entities.set(sat.id, e);
   return e;
@@ -344,7 +379,10 @@ function select(id) {
   if (id && !isReal(id) && !PLANET_IDS.has(id) && !entities.has(id)) id = null;
   if (selectedId === id) return;
   if (selectedId && !PLANET_IDS.has(selectedId) && !isReal(selectedId)) sim.setThrust(selectedId, []);
+  const prev = selectedId && entities.get(selectedId);
+  if (prev) orbitPending.add(prev); // drop its PE/AP/AN/DN markers now
   selectedId = id;
+  wake();
   setRealSelection(isReal(id) ? id : null);
   uiThrust.clear();
   input?.held.clear(); // a key held for the old craft must not fire the new one
@@ -483,24 +521,37 @@ function handleEvents(events) {
 // ------------------------------------------------------------------ frame
 
 let lastTime = performance.now();
+let rafId = 0;
 let hudClock = 0;
 let historyClock = -Infinity;
-let orbitTick = 0;
 let lastAlert;
 const tmp = new Vector3(), tmp2 = new Vector3(), tmp3 = new Vector3(), sunDir = new Vector3(), moonRender = new Vector3();
 const orbitBuf = new Float32Array(ORBIT_SEGMENTS * 3);
+const ZERO3 = [0, 0, 0];
+const NO_THRUST = [];
+let lastThrustCraft = null;
+// Argument objects reused every frame (the hot loop allocates nothing per craft).
+const earthArgs = { rotation: 0, sunDir, cameraPosition: null, time: 0, settings: null };
+const moonArgs = { position: moonRender, sunDir, earthPosition: ORIGIN };
+const skyArgs = { sunDir, camera: null };
+const visualArgs = { position: null, velocityDir: null, camera: null, heating: 0, selected: false, sunDir, thrustDir: null, viewportHeight: 0 };
 
 function frame(now) {
-  requestAnimationFrame(frame);
+  rafId = requestAnimationFrame(frame);
   const dt = Math.min(0.1, Math.max(0, (now - lastTime) / 1000));
   lastTime = now;
+  const pf = perf;
+  let pt = pf ? pf.begin(now) : 0;
+  const t0 = pf ? pt : performance.now();
 
   // Thrusters: keyboard + held HUD buttons drive the selected craft.
-  const dirs = [...new Set([...input.held, ...uiThrust])];
   const craft = selectedId && entities.get(selectedId)?.sat;
-  const firing = craft?.alive && craft.fuel > 0 ? dirs : [];
-  if (craft) sim.setThrust(craft.id, firing);
-  const key = firing.join(',');
+  let firing = NO_THRUST;
+  if (craft?.alive && craft.fuel > 0 && (input.held.size || uiThrust.size)) firing = [...new Set([...input.held, ...uiThrust])];
+  // (re)apply only when something is held or changed: setThrust allocates
+  if (craft && (firing.length || craft.thrust?.length || lastThrustCraft !== craft.id)) sim.setThrust(craft.id, firing);
+  lastThrustCraft = craft ? craft.id : null;
+  const key = firing.length ? firing.join(',') : '';
   if (key !== lastThrustKey) { lastThrustKey = key; hud.setThrusting?.(firing); }
 
   if (!paused) {
@@ -510,34 +561,46 @@ function frame(now) {
   } else {
     warpLimited = false;
   }
+  if (pf) pt = pf.lap(0, pt);
 
   // Celestial bodies
   toVec3(sim.sunDirection(), sunDir);
   toRender(sim.moonPos, moonRender);
-  earth.update({ rotation: sim.earthRotation(), sunDir, cameraPosition: view.camera.position, time: now / 1000, settings: settings.graphics });
-  moon.update({ position: moonRender, sunDir, earthPosition: ORIGIN });
+  earthArgs.rotation = sim.earthRotation();
+  earthArgs.cameraPosition = view.camera.position;
+  earthArgs.time = now / 1000;
+  earthArgs.settings = settings.graphics;
+  earth.update(earthArgs);
+  moon.update(moonArgs);
   moonAnchor.position.copy(moonRender).add(tmp.set(0, R_MOON * UNIT * 1.6, 0));
   pushTrail(moonTrail, moonRender, null);
+  if (pf) pt = pf.lap(2, pt);
   updateCatalog();
+  if (pf) pt = pf.lap(1, pt);
 
   rig.update(dt);
 
   // Spacecraft
-  orbitTick++;
+  let animating = false;
+  const riding = rig.mode !== 'orbit'; // chase / nadir: no ring around our own craft
+  visualArgs.camera = view.camera;
+  visualArgs.viewportHeight = window.innerHeight;
   for (const e of entities.values()) {
     const { sat } = e;
     if (!sat.alive) continue;
     const p = toRender(sat.pos, tmp);
-    const vel = toVec3(sim.relativeState(sat).v, tmp2).normalize();
-    const thrusting = sat._thrusting ? toVec3(sat.thrustDirWorld, new Vector3()) : null;
-    const riding = rig.mode !== 'orbit' && sat.id === selectedId; // chase / nadir: no ring around our own craft
-    e.visual.update({ position: p, velocityDir: vel, camera: view.camera, heating: sat.heating, selected: sat.id === selectedId && !riding, sunDir, thrustDir: thrusting, viewportHeight: window.innerHeight });
+    visualArgs.position = p;
+    visualArgs.velocityDir = relVelocity(sat, tmp2).normalize();
+    visualArgs.heating = sat.heating;
+    visualArgs.selected = sat.id === selectedId && !riding;
+    visualArgs.thrustDir = sat._thrusting ? toVec3(sat.thrustDirWorld, e.thrustVec) : null;
+    e.visual.update(visualArgs);
+    if (sat.heating > 0.01) animating = true; // plasma flicker
     e.anchor.position.copy(p);
     pushTrail(e.trail, p, e);
-    if (settings.graphics.orbits && (sat.id === selectedId || (orbitTick + e.orbitFrame++) % 4 === 0 || sat.central === 'moon')) {
-      updateOrbitLine(e.orbit, sat);
-    }
+    if (e.orbitCentral === 'moon') e.orbit.object.position.copy(moonRender); // Moon-relative points
   }
+  if (settings.graphics.orbits) updateOrbitLines();
   updateMoonOrbit();
   updateSelectionOverlays();
   updateRealVisual();
@@ -547,37 +610,146 @@ function frame(now) {
   }
 
   hideOccludedLabels();
-  sky.update({ sunDir, camera: view.camera });
-  view.render();
+  skyArgs.camera = view.camera;
+  sky.update(skyArgs);
+  if (pf) pt = pf.lap(2, pt);
+  // Render on demand: a paused, still scene is not drawn again (labels still sync).
+  const draw = needsDraw(now, animating || flashes.length > 0);
+  let renderMs = 0;
+  if (draw) {
+    if (pf) view.renderer.info.reset();
+    const r0 = pf ? pt : performance.now();
+    view.renderScene();
+    const r1 = performance.now();
+    renderMs = r1 - r0;
+    lastDrawAt = now;
+    rememberView();
+    if (pf) { pf.markRendered(); pt = pf.lap(3, pt); }
+  }
+  view.renderLabels();
+  if (pf) pt = pf.lap(4, pt);
 
   hudClock += dt;
   if (hudClock >= HUD_INTERVAL) { hudClock = 0; updateHud(); updateFraming(); }
+  if (adaptive) adaptive.sample(now, draw, performance.now() - t0 - renderMs);
+  if (pf) {
+    pf.lap(5, pt);
+    pf.extra.pixelRatio = view.renderer.getPixelRatio();
+    pf.extra.scale = view.getResolutionScale();
+    pf.end(view.renderer.info);
+  }
 }
+
+// ------------------------------------------------------------------ adaptive resolution
+
+/** On by default with a GPU; ?adaptive=1 forces it on (e.g. software GL), ?adaptive=0 off. */
+function createAdaptive() {
+  const mode = params.get('adaptive');
+  if (mode === '0' || (mode !== '1' && view.softwareGL)) return null;
+  return new AdaptiveResolution({
+    apply: (scale) => { view.setResolutionScale(scale); syncPointSizes(); wake(); },
+  });
+}
+
+/** Point sprites (stars, real satellites) keep their CSS size at any drawing-buffer scale. */
+function syncPointSizes() {
+  const r = Math.min(window.devicePixelRatio || 1, 2) * view.getResolutionScale();
+  sky.stars.material.uniforms.pixelRatio.value = r;
+  catalogPoints.setPixelRatio(r);
+}
+
+// ------------------------------------------------------------------ render on demand
+
+// While paused and still, the GL scene is only redrawn when something changes:
+// input, a HUD action, camera motion, a setting, the catalogue, animations, or
+// a 1 Hz heartbeat. Drawing resumes the moment any of these happens.
+const HEARTBEAT_MS = 1000;
+let lastDrawAt = -Infinity;
+const drawnView = new Float64Array(24);
+const drawnState = [];
+const GRAPHICS_KEYS = Object.keys(DEFAULT_SETTINGS.graphics);
+
+function wake(ms = WAKE_MS) { wakeUntil = Math.max(wakeUntil, performance.now() + ms); }
+
+function rememberView() {
+  const c = view.camera, v = drawnView;
+  v[0] = c.position.x; v[1] = c.position.y; v[2] = c.position.z;
+  v[3] = c.quaternion.x; v[4] = c.quaternion.y; v[5] = c.quaternion.z; v[6] = c.quaternion.w;
+  v[7] = c.fov;
+  const m = c.projectionMatrix.elements;
+  for (let i = 0; i < 16; i++) v[8 + i] = m[i];
+}
+
+function viewChanged() {
+  const c = view.camera, v = drawnView, m = c.projectionMatrix.elements;
+  if (v[0] !== c.position.x || v[1] !== c.position.y || v[2] !== c.position.z || v[3] !== c.quaternion.x
+    || v[4] !== c.quaternion.y || v[5] !== c.quaternion.z || v[6] !== c.quaternion.w || v[7] !== c.fov) return true;
+  for (let i = 0; i < 16; i++) if (v[8 + i] !== m[i]) return true;
+  return false;
+}
+
+/** Cheap signature of everything that changes the picture while paused. */
+function stateChanged() {
+  const s = drawnState;
+  let i = 0, changed = false;
+  const put = (x) => { if (s[i] !== x) { s[i] = x; changed = true; } i++; };
+  put(sim); put(sim.time); put(sim.satellites.length); put(selectedId); put(rig.mode); put(real.id);
+  put(catalog?.snapshot ?? null); put(entities.size);
+  const g = settings.graphics;
+  for (let k = 0; k < GRAPHICS_KEYS.length; k++) put(g[GRAPHICS_KEYS[k]]);
+  return changed;
+}
+
+function needsDraw(now, animating) {
+  const changed = stateChanged() | viewChanged();
+  if (!paused || animating || rig.fly || changed) { if (changed) wake(); return true; }
+  if (performance.now() < wakeUntil) return true;
+  return now - lastDrawAt >= HEARTBEAT_MS;
+}
+
+/** Stop the loop while the tab is hidden; resume (and draw) when it is shown. */
+function onVisibility() {
+  if (document.hidden) {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = 0;
+  } else if (!rafId && view) {
+    lastTime = performance.now();
+    adaptive?.reset();
+    wake();
+    rafId = requestAnimationFrame(frame);
+  }
+}
+
+// ------------------------------------------------------------------ labels
 
 /** Is the point hidden from the camera behind the Earth or the Moon? */
 function occluded(p) {
   const cam = view.camera.position;
   const d = cam.distanceTo(p);
   const dir = tmp2.subVectors(p, cam).divideScalar(d);
-  for (const [c, r] of [[ORIGIN, R_EARTH * UNIT], [moonRender, R_MOON * UNIT]]) {
-    const oc = tmp3.subVectors(c, cam);
-    const along = oc.dot(dir);
-    if (along <= 0 || along >= d) continue;
-    if (oc.lengthSq() - along * along < r * r * 0.995 && c.distanceTo(p) > r * 1.001) return true;
-  }
-  return false;
+  return behind(ORIGIN, R_EARTH * UNIT, p, cam, dir, d) || behind(moonRender, R_MOON * UNIT, p, cam, dir, d);
+}
+
+function behind(c, r, p, cam, dir, d) {
+  const oc = tmp3.subVectors(c, cam);
+  const along = oc.dot(dir);
+  if (along <= 0 || along >= d) return false;
+  return oc.lengthSq() - along * along < r * r * 0.995 && c.distanceTo(p) > r * 1.001;
 }
 
 /** CSS labels are drawn on top of everything; hide those whose anchor is behind a planet. */
 function hideOccludedLabels() {
   const vis = settings.graphics.labels;
   moonAnchor.visible = vis && !occluded(moonRender);
+  const riding = rig.mode !== 'orbit';
   for (const e of entities.values()) {
-    const riding = rig.mode !== 'orbit' && e.sat.id === selectedId;
-    e.label.visible = vis && !riding && !occluded(e.anchor.position);
+    e.label.visible = vis && !(riding && e.sat.id === selectedId) && !occluded(e.anchor.position);
   }
-  for (const l of Object.values(markerLabels)) if (l.visible && occluded(l.position)) l.visible = false;
-  if (real.label) real.label.visible = vis && !!real.state && !(rig.mode !== 'orbit') && !occluded(real.anchor.position);
+  for (let i = 0; i < MARKER_KEYS.length; i++) {
+    const l = markerLabels[MARKER_KEYS[i]];
+    if (l.visible && occluded(l.position)) l.visible = false;
+  }
+  if (real.label) real.label.visible = vis && !!real.state && !riding && !occluded(real.anchor.position);
 }
 
 /** Add a trail point once the object has moved far enough (keeps trails smooth at any warp). */
@@ -592,24 +764,119 @@ function pushTrail(trail, p, e) {
   }
 }
 
-function updateOrbitLine(line, sat) {
-  const { el, central } = sim.orbitOf(sat);
-  const origin = central === 'moon' ? [moonRender.x, moonRender.y, moonRender.z] : [0, 0, 0];
-  const { count, closed } = sampleConic(el, orbitBuf, ORBIT_SEGMENTS, UNIT, origin, central === 'moon' ? 66100 : ESCAPE_DISTANCE);
+// ------------------------------------------------------------------ orbit predictions
+
+/** Velocity relative to the dominant body (as sim.relativeState(sat).v, without allocating). */
+function relVelocity(sat, out) {
+  const p = sat.pos, m = sim.moonPos;
+  const dx = p[0] - m[0], dy = p[1] - m[1], dz = p[2] - m[2];
+  if (dx * dx + dy * dy + dz * dz < MOON_SOI * MOON_SOI) {
+    const mv = sim.moonVel;
+    return out.set(sat.vel[0] - mv[0], sat.vel[1] - mv[1], sat.vel[2] - mv[2]);
+  }
+  return out.set(sat.vel[0], sat.vel[1], sat.vel[2]);
+}
+
+/**
+ * Osculating elements about the dominant body (as sim.orbitOf), cached per
+ * craft until its state or the sim time changes. `version` bumps on change.
+ */
+function orbitState(e) {
+  const s = e.sat;
+  let c = e.oc;
+  if (!c) c = e.oc = { key: new Float64Array(8).fill(NaN), sim: null, el: null, central: 'earth', radius: R_EARTH, r: [0, 0, 0], v: [0, 0, 0], version: 0 };
+  const p = s.pos, v = s.vel, k = c.key;
+  if (c.sim === sim && k[0] === p[0] && k[1] === p[1] && k[2] === p[2] && k[3] === v[0] && k[4] === v[1] && k[5] === v[2] && k[6] === sim.time) return c;
+  c.sim = sim;
+  k[0] = p[0]; k[1] = p[1]; k[2] = p[2]; k[3] = v[0]; k[4] = v[1]; k[5] = v[2]; k[6] = sim.time;
+  const m = sim.moonPos;
+  const dx = p[0] - m[0], dy = p[1] - m[1], dz = p[2] - m[2];
+  if (dx * dx + dy * dy + dz * dz < MOON_SOI * MOON_SOI) {
+    const mv = sim.moonVel;
+    c.central = 'moon'; c.radius = R_MOON;
+    c.r[0] = dx; c.r[1] = dy; c.r[2] = dz;
+    c.v[0] = v[0] - mv[0]; c.v[1] = v[1] - mv[1]; c.v[2] = v[2] - mv[2];
+  } else {
+    c.central = 'earth'; c.radius = R_EARTH;
+    c.r[0] = p[0]; c.r[1] = p[1]; c.r[2] = p[2];
+    c.v[0] = v[0]; c.v[1] = v[1]; c.v[2] = v[2];
+  }
+  c.el = elementsFromState(c.r, c.v, c.central === 'moon' ? MU_MOON : MU_EARTH);
+  c.version++;
+  return c;
+}
+
+// Orbit lines are refreshed round-robin within a per-frame budget (the
+// selected craft and pending ones first), and only when the craft's state
+// changed: with many craft at high warp the cost per frame stays bounded, and
+// a paused scene costs nothing. Points are relative to the central body; the
+// line object is placed at the Moon for lunar orbits, so it follows the Moon
+// every frame without resampling.
+const ORBIT_BUDGET = 8;
+let orbitCursor = 0;
+let orbitList = [];
+let orbitListSize = -1;
+const orbitPending = new Set();
+
+function updateOrbitLines() {
+  if (orbitListSize !== entities.size || orbitList.length !== entities.size) {
+    orbitList = [...entities.values()];
+    orbitListSize = entities.size;
+  }
+  const sel = selectedId && entities.get(selectedId);
+  if (sel?.sat.alive) refreshOrbit(sel);
+  if (orbitPending.size) {
+    for (const e of orbitPending) if (e.sat.alive && entities.get(e.sat.id) === e) refreshOrbit(e);
+    orbitPending.clear();
+  }
+  const n = orbitList.length;
+  const budget = Math.min(ORBIT_BUDGET, Math.max(1, Math.ceil(n / 4)));
+  let done = 0;
+  for (let k = 0; k < n && done < budget; k++) {
+    const e = orbitList[orbitCursor % n];
+    orbitCursor = (orbitCursor + 1) % n;
+    if (e === sel || !e.sat.alive) continue;
+    if (refreshOrbit(e)) done++;
+  }
+}
+
+const _pe = new Vector3(), _ap = new Vector3(), _an = new Vector3(), _dn = new Vector3();
+
+/** Resample a craft's orbit line if its elements or its marker state changed. */
+function refreshOrbit(e) {
+  const marks = e.sat.id === selectedId && settings.graphics.markers;
+  const c = orbitState(e);
+  if (e.lineVersion === c.version && e.lineMarks === marks) return false;
+  e.lineVersion = c.version;
+  e.lineMarks = marks;
+  const line = e.orbit;
+  const { count, closed } = sampleConic(c.el, orbitBuf, ORBIT_SEGMENTS, UNIT, ZERO3, c.central === 'moon' ? MOON_SOI : ESCAPE_DISTANCE);
   line.setPoints(orbitBuf, count, closed);
-  if (sat.id === selectedId && settings.graphics.markers) {
-    const { peri, apo } = apsides(el);
-    const o = central === 'moon' ? moonRender : ORIGIN;
-    line.setApsides(toRender(peri).add(o), apo ? toRender(apo).add(o) : null);
-    const nodes = nodePoints(el);
-    line.setNodes?.(nodes.an ? toRender(nodes.an).add(o) : null, nodes.dn ? toRender(nodes.dn).add(o) : null);
+  e.orbitCentral = c.central;
+  line.object.position.copy(c.central === 'moon' ? moonRender : ORIGIN);
+  if (marks) {
+    const hasAp = apsidesInto(c.el, _pe, _ap);
+    line.setApsides(_pe, hasAp ? _ap : null);
+    const nodes = nodePoints(c.el, _an, _dn);
+    line.setNodes?.(nodes & 1 ? _an : null, nodes & 2 ? _dn : null);
   } else {
     line.setApsides(null, null);
     line.setNodes?.(null, null);
   }
+  return true;
+}
+
+/** Periapsis / apoapsis (render units, relative to the central body); false when unbound. */
+function apsidesInto(el, peri, apo) {
+  const P = el.P;
+  peri.set(P[0], P[1], P[2]).multiplyScalar(el.periapsis * UNIT);
+  if (!Number.isFinite(el.apoapsis)) return false;
+  apo.set(P[0], P[1], P[2]).multiplyScalar(-el.apoapsis * UNIT);
+  return true;
 }
 
 let moonOrbitDone = false, moonOrbitTime = 0;
+const moonOrbitBuf = new Float32Array(ORBIT_SEGMENTS * 3);
 function updateMoonOrbit() {
   moonOrbitLine.setVisible(settings.graphics.orbits);
   // The Sun perturbs the Moon's path: refresh its osculating ellipse every 6 h of sim time.
@@ -617,79 +884,113 @@ function updateMoonOrbit() {
   if (moonOrbitDone || !settings.graphics.orbits) return;
   moonOrbitTime = sim.time;
   const el = sim.moonElements();
-  const buf = new Float32Array(ORBIT_SEGMENTS * 3);
-  const { count, closed } = sampleConic(el, buf, ORBIT_SEGMENTS, UNIT, [0, 0, 0], 1e7);
-  moonOrbitLine.setPoints(buf, count, closed);
+  const { count, closed } = sampleConic(el, moonOrbitBuf, ORBIT_SEGMENTS, UNIT, ZERO3, 1e7);
+  moonOrbitLine.setPoints(moonOrbitBuf, count, closed);
   moonOrbitLine.setApsides(null, null);
   moonOrbitDone = true;
 }
 
-/** Ascending/descending node positions (km, relative to the central body). */
-function nodePoints(el) {
-  const node = new Vector3(0, 1, 0).cross(toVec3(el.W));
-  if (node.lengthSq() < 1e-12) return { an: null, dn: null };
-  node.normalize();
-  const theta = Math.atan2(node.dot(toVec3(el.Q)), node.dot(toVec3(el.P)));
-  const at = (t) => {
-    const d = 1 + el.e * Math.cos(t);
-    if (d <= 1e-6) return null;
-    const r = el.p / d;
-    const P = toVec3(el.P), Q = toVec3(el.Q);
-    const v = P.multiplyScalar(Math.cos(t) * r).add(Q.multiplyScalar(Math.sin(t) * r));
-    return v.length() < ESCAPE_DISTANCE ? [v.x, v.y, v.z] : null;
-  };
-  return { an: at(theta), dn: at(theta + Math.PI) };
+const _node = new Vector3(), _W = new Vector3(), _P = new Vector3(), _Q = new Vector3();
+/**
+ * Ascending/descending node positions (render units, relative to the central
+ * body) written into `an` / `dn`. Returns a bit mask: 1 = an valid, 2 = dn valid.
+ */
+function nodePoints(el, an, dn) {
+  _node.set(0, 1, 0).cross(toVec3(el.W, _W));
+  if (_node.lengthSq() < 1e-12) return 0;
+  _node.normalize();
+  const theta = Math.atan2(_node.dot(toVec3(el.Q, _Q)), _node.dot(toVec3(el.P, _P)));
+  return (nodeAt(el, theta, an) ? 1 : 0) | (nodeAt(el, theta + Math.PI, dn) ? 2 : 0);
+}
+
+function nodeAt(el, t, out) {
+  const d = 1 + el.e * Math.cos(t);
+  if (d <= 1e-6) return false;
+  const r = el.p / d;
+  const c = Math.cos(t) * r, s = Math.sin(t) * r;
+  const P = el.P, Q = el.Q;
+  out.set(P[0] * c + Q[0] * s, P[1] * c + Q[1] * s, P[2] * c + Q[2] * s);
+  if (out.length() >= ESCAPE_DISTANCE) return false;
+  out.multiplyScalar(UNIT);
+  return true;
+}
+
+// ------------------------------------------------------------------ selection overlays
+
+const NUM = new Intl.NumberFormat();
+const MARKER_KEYS = ['pe', 'ap', 'an', 'dn'];
+const overlay = { id: null, version: -1, central: 'earth', size: 0, mask: 0, ap: false, text: { pe: '', ap: '' }, ring: new Float64Array(7).fill(NaN) };
+const ovPos = { pe: new Vector3(), ap: new Vector3(), an: new Vector3(), dn: new Vector3() };
+
+function setLabelText(l, text) {
+  if (l.userData.text === text) return;
+  l.userData.text = text;
+  (l.userData.nameEl || (l.userData.nameEl = l.element.querySelector('.name'))).textContent = text;
 }
 
 /** PE/AP/AN/DN text markers and the Hohmann target ring for the selected craft. */
 function updateSelectionOverlays() {
   const e = selectedId && entities.get(selectedId);
   const alive = e?.sat.alive;
-  for (const l of Object.values(markerLabels)) l.visible = false;
+  for (let i = 0; i < MARKER_KEYS.length; i++) markerLabels[MARKER_KEYS[i]].visible = false;
   targetRing.setVisible(false);
   if (!alive) return;
-  const { el, central, radius } = sim.orbitOf(e.sat);
-  const o = central === 'moon' ? moonRender : ORIGIN;
+  const c = orbitState(e);
+  const el = c.el;
+  if (overlay.id !== e.sat.id || overlay.version !== c.version) {
+    overlay.id = e.sat.id; overlay.version = c.version; overlay.central = c.central;
+    overlay.size = Math.min(Number.isFinite(el.a) && el.a > 0 ? el.a : el.periapsis * 3, ESCAPE_DISTANCE) * UNIT;
+    overlay.ap = apsidesInto(el, ovPos.pe, ovPos.ap) && el.apoapsis < ESCAPE_DISTANCE;
+    overlay.mask = c.central === 'earth' ? nodePoints(el, ovPos.an, ovPos.dn) : 0;
+    overlay.text.pe = `PE ${NUM.format(Math.round(el.periapsis - c.radius))} km`;
+    overlay.text.ap = overlay.ap ? `AP ${NUM.format(Math.round(el.apoapsis - c.radius))} km` : '';
+  }
+  const o = overlay.central === 'moon' ? moonRender : ORIGIN;
   // Text tags only when the orbit is big enough on screen to keep them readable.
-  const size = Math.min(Number.isFinite(el.a) && el.a > 0 ? el.a : el.periapsis * 3, ESCAPE_DISTANCE) * UNIT;
   const showMarkers = !!(settings.graphics.markers && settings.graphics.labels
-    && size / view.camera.position.distanceTo(o) > 0.3);
+    && overlay.size / view.camera.position.distanceTo(o) > 0.3);
   if (showMarkers) {
-    const { peri, apo } = apsides(el);
-    const nodes = nodePoints(el);
-    const fmt = (km) => `${Math.round(km).toLocaleString()} km`;
-    const place = (key, pos, text) => {
+    const place = (key, text) => {
       const l = markerLabels[key];
-      if (!pos) return;
-      l.position.copy(toRender(pos)).add(o);
-      l.element.querySelector('.name').textContent = text;
+      l.position.copy(ovPos[key]).add(o);
+      setLabelText(l, text);
       l.visible = true;
     };
-    place('pe', peri, `PE ${fmt(el.periapsis - radius)}`);
-    if (apo && el.apoapsis < ESCAPE_DISTANCE) place('ap', apo, `AP ${fmt(el.apoapsis - radius)}`);
-    if (central === 'earth') { place('an', nodes.an, 'AN'); place('dn', nodes.dn, 'DN'); }
+    place('pe', overlay.text.pe);
+    if (overlay.ap) place('ap', overlay.text.ap);
+    if (overlay.mask & 1) place('an', 'AN');
+    if (overlay.mask & 2) place('dn', 'DN');
   }
-  if (settings.graphics.targetRing && central === 'earth') {
-    const rT = R_EARTH + targetAltKm;
-    const ring = { e: 0, p: rT, a: rT, apoapsis: rT, P: el.P, Q: el.Q };
-    const buf = targetRing.buffer || (targetRing.buffer = new Float32Array(192 * 3));
-    const { count, closed } = sampleConic(ring, buf, 192, UNIT, [0, 0, 0], ESCAPE_DISTANCE);
-    targetRing.setPoints(buf, count, closed);
+  if (settings.graphics.targetRing && overlay.central === 'earth') {
+    // Resample only when the orbit plane or the target altitude changed.
+    const rg = overlay.ring, P = el.P, Q = el.Q;
+    if (rg[0] !== P[0] || rg[1] !== P[1] || rg[2] !== P[2] || rg[3] !== Q[0] || rg[4] !== Q[1] || rg[5] !== Q[2] || rg[6] !== targetAltKm) {
+      rg[0] = P[0]; rg[1] = P[1]; rg[2] = P[2]; rg[3] = Q[0]; rg[4] = Q[1]; rg[5] = Q[2]; rg[6] = targetAltKm;
+      const rT = R_EARTH + targetAltKm;
+      const ring = { e: 0, p: rT, a: rT, apoapsis: rT, P, Q };
+      const buf = targetRing.buffer || (targetRing.buffer = new Float32Array(192 * 3));
+      const { count, closed } = sampleConic(ring, buf, 192, UNIT, ZERO3, ESCAPE_DISTANCE);
+      targetRing.setPoints(buf, count, closed);
+    }
     targetRing.setVisible(true);
   }
 }
 
 // ------------------------------------------------------------------ real satellites
 
-/** Propagate the catalogue (worker) and upload the point positions; exact state for the selection. */
+/** Propagate the catalogue (worker) and draw the points; exact state for the selection. */
 function updateCatalog() {
   if (!catalog) return;
   const rate = paused ? 0 : WARP_STEPS[warpIndex];
   catalog.update(sim.dateMs, rate);
-  const n = catalog.positionsAt(sim.dateMs, catalogPoints.positions, UNIT);
-  catalogPoints.commit(n);
+  // Uploads the snapshot only when a new one arrived; the motion in between
+  // is extrapolated on the GPU (one uniform per frame).
+  catalogPoints.sync(catalog.snapshot, sim.dateMs, UNIT);
   if (real.id) {
-    real.state = catalog.stateOf(real.index, sim.dateMs);
+    if (real.stateMs !== sim.dateMs) {
+      real.state = catalog.stateOf(real.index, sim.dateMs, real.buf);
+      real.stateMs = sim.dateMs;
+    }
     catalogPoints.setHighlight(real.index);
   } else {
     catalogPoints.setHighlight(-1);
@@ -702,6 +1003,7 @@ function setRealSelection(id) {
   if (real.label) { real.anchor.remove(real.label); real.label = null; }
   real.orbit?.setVisible(false);
   real.id = id; real.index = id ? realIndex(id) : -1; real.obj = id ? catalog.objects[real.index] : null; real.state = null;
+  real.orbitMs = NaN;
   if (!real.obj) { real.id = null; return; }
   const color = groupColor(real.obj.group);
   real.visual = createSatelliteVisual({ color: parseInt(color.slice(1), 16), kind: 'satellite' });
@@ -710,8 +1012,14 @@ function setRealSelection(id) {
   real.label.element.classList.add('selected');
   real.anchor.add(real.label);
   real.orbit.setColor(parseInt(color.slice(1), 16));
-  real.state = catalog.stateOf(real.index, sim.dateMs);
+  real.state = catalog.stateOf(real.index, sim.dateMs, real.buf);
+  real.stateMs = sim.dateMs;
 }
+
+// The real satellite's osculating orbit changes slowly: resample it at most
+// every REAL_ORBIT_FRAMES frames (and at once after selection or a jump in time).
+const REAL_ORBIT_FRAMES = 4;
+let realOrbitTick = 0;
 
 function updateRealVisual() {
   if (!real.id || !real.visual) return;
@@ -719,12 +1027,22 @@ function updateRealVisual() {
   const p = toRender(real.state.pos, tmp);
   const riding = rig.mode !== 'orbit';
   real.visual.object.visible = true;
-  real.visual.update({ position: p, velocityDir: toVec3(real.state.vel, tmp2).normalize(), camera: view.camera, heating: 0, selected: !riding, sunDir, thrustDir: null, viewportHeight: window.innerHeight });
+  visualArgs.position = p;
+  visualArgs.velocityDir = toVec3(real.state.vel, tmp2).normalize();
+  visualArgs.heating = 0;
+  visualArgs.selected = !riding;
+  visualArgs.thrustDir = null;
+  real.visual.update(visualArgs);
   real.anchor.position.copy(p);
   if (settings.graphics.orbits) {
-    const el = elementsFromState(real.state.pos, real.state.vel, MU_EARTH);
-    const { count, closed } = sampleConic(el, orbitBuf, ORBIT_SEGMENTS, UNIT, [0, 0, 0], ESCAPE_DISTANCE);
-    real.orbit.setPoints(orbitBuf, count, closed);
+    realOrbitTick++;
+    if (real.orbitMs !== real.stateMs && (!(real.orbitMs === real.orbitMs) || realOrbitTick % REAL_ORBIT_FRAMES === 0
+      || Math.abs(real.stateMs - real.orbitMs) > 600e3)) {
+      real.orbitMs = real.stateMs;
+      const el = elementsFromState(real.state.pos, real.state.vel, MU_EARTH);
+      const { count, closed } = sampleConic(el, orbitBuf, ORBIT_SEGMENTS, UNIT, ZERO3, ESCAPE_DISTANCE);
+      real.orbit.setPoints(orbitBuf, count, closed);
+    }
     real.orbit.setVisible(true);
   } else {
     real.orbit.setVisible(false);
@@ -745,6 +1063,7 @@ function realTelemetry() {
 
 function onCatalogChange() {
   if (!catalog) return;
+  wake();
   for (const g of catalog.groups.values()) {
     if (g.loaded && !coloredGroups.has(g.id)) {
       catalogPoints.setGroupColor(g.start, g.count, groupColor(g.id));
@@ -848,7 +1167,9 @@ function applySetting(path, value) {
   saveSettings();
   if (group === 'physics') { sim.physics[key] = value; return; }
   switch (key) {
-    case 'quality': view.setQuality(value); view.setBloom(settings.graphics.bloom); break; // setQuality resets bloom
+    case 'quality': // setQuality resets bloom; the new quality is the new resolution ceiling
+      view.setQuality(value); view.setBloom(settings.graphics.bloom); adaptive?.restore(); syncPointSizes();
+      break;
     case 'bloom': view.setBloom(value); break;
     case 'labels':
       for (const e of entities.values()) e.label.visible = value;
@@ -863,7 +1184,7 @@ function applySetting(path, value) {
       for (const e of entities.values()) e.trail.setMaxPoints(value);
       break;
     case 'orbits':
-      for (const e of entities.values()) e.orbit.setVisible(value);
+      for (const e of entities.values()) { e.orbit.setVisible(value); if (value) orbitPending.add(e); }
       break;
     default: break; // clouds / atmosphere / cityLights / markers / targetRing are read every frame
   }
@@ -930,6 +1251,8 @@ function onKeyAction(action) {
 
 function onResize() {
   view.setSize(window.innerWidth, window.innerHeight);
+  adaptive?.reset();
+  wake();
   lastFrameShift = NaN;
   updateFraming();
 }
@@ -953,6 +1276,16 @@ function updateFraming() {
 // ------------------------------------------------------------------ HUD handlers
 
 function handlers() {
+  const list = handlerList();
+  // Every HUD action wakes the renderer (render on demand while paused).
+  for (const k of Object.keys(list)) {
+    const fn = list[k];
+    list[k] = (...args) => { wake(); return fn(...args); };
+  }
+  return list;
+}
+
+function handlerList() {
   const needCraft = () => {
     const sat = selectedId && entities.get(selectedId)?.sat;
     if (!sat?.alive) { hud.toast?.('Select a flying spacecraft first.', 'warn'); return null; }
@@ -1025,4 +1358,4 @@ function handlers() {
 }
 
 // Debug handle for the console and automated smoke tests.
-window.__satalitte = { get sim() { return sim; }, entities, settings, select, focusOn, launchPreset, setCameraMode, get rig() { return rig; }, get input() { return input; }, get previewLabel() { return previewLabel; } };
+window.__satalitte = { get sim() { return sim; }, entities, settings, select, focusOn, launchPreset, setCameraMode, get rig() { return rig; }, get input() { return input; }, get previewLabel() { return previewLabel; }, get view() { return view; }, get perf() { return perf; } };
