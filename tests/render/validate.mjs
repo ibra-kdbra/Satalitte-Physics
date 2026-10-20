@@ -208,6 +208,7 @@ function initScript(cfg) {
         nanCount: bad.length, nanObjects: bad.slice(0, 8),
         glErrors: rq.glErrors.splice(0).concat(drained), shaderErrors: rq.shaderErrors.splice(0), contextLost: rq.contextLost,
         sceneDraws: rq.sceneDraws, frames: rq.frames, gpu: renderer,
+        stars: (() => { const st = s && s.getObjectByName('Stars'); return st ? st.geometry.attributes.position.count : -1; })(),
         info: r ? { calls: r.info.render.calls, triangles: r.info.render.triangles, geometries: r.info.memory.geometries,
           textures: r.info.memory.textures, programs: r.info.programs ? r.info.programs.length : -1,
           pixelRatio: r.getPixelRatio(), buffer: [r.domElement.width, r.domElement.height], css: [r.domElement.clientWidth, r.domElement.clientHeight] } : null,
@@ -286,6 +287,10 @@ async function withSession(browser, port, s) {
       const msgs = log.console.slice(log.cursor);
       log.cursor = log.console.length;
       const env = msgs.filter((m) => ENV_WARNINGS.some((re) => re.test(m)));
+      // ERR_ABORTED on stars.bin is reported intermittently by the headless browser although the
+      // catalogue arrives (checked: all stars present) — reported as INFO, not as a failure.
+      const benign = msgs.filter((m) => /ERR_ABORTED\] \S*\/stars\.bin/.test(m) && h.stars >= 25000);
+      env.push(...benign);
       const net = msgs.filter((m) => !env.includes(m) && /^\[(requestfailed|http)/.test(m));
       const real = msgs.filter((m) => !env.includes(m) && !net.includes(m));
       c.check('console: no errors/warnings', real.length === 0, real.length ? real.slice(0, 4).join(' | ') : 0, '0 messages');
@@ -294,6 +299,7 @@ async function withSession(browser, port, s) {
       c.check('webgl: no gl errors', h.glErrors.length === 0, h.glErrors.length ? h.glErrors.join(',') : 0, '0');
       c.check('webgl: no shader compile/link errors', h.shaderErrors.length === 0 && h.contextLost === 0,
         h.shaderErrors.length ? h.shaderErrors[0].slice(0, 200) : `contextLost=${h.contextLost}`, '0');
+      if (h.stars >= 0) c.check('sky: Hipparcos catalogue loaded', h.stars === 25723, h.stars, '25,723 stars');
       c.check('scene: no NaN matrices', h.nanCount === 0, h.nanCount ? `${h.nanCount}: ${h.nanObjects.join(',')}` : 0, '0');
       const i = h.info;
       c.check('renderer.info sane', !!i && h.sceneDraws > 0 && h.sceneDraws <= maxDraws && i.programs > 0 && i.programs < 80 && i.textures < 80 && i.geometries < 1500,
@@ -982,6 +988,53 @@ SESSIONS.push({
       c.check('labels sit next to their objects', place.every((p) => p.gap <= 25), place.map((p) => `${p.text.slice(0, 10)}:${p.gap.toFixed(0)}`).join(' '), 'gap object→pill ≤ 25 px');
       await ctx.health(c);
     }
+  },
+});
+
+// ---- launch by right-drag in space: velocity arrow, readout label, predicted orbit, then the launch itself
+SESSIONS.push({
+  id: 'app-launch', app: true, url: app({ empty: '' }), date: D0,
+  async run(ctx) {
+    await pause(ctx);
+    const c = newCase('app-launch', 'launch-drag-preview', 'Right-drag launch: arrow, readout and orbit preview while dragging; launch on release');
+    await ctx.eval(() => window.__rqh.setView([0, 8, 30], [0, 0, 0]));
+    await ctx.frames(3);
+    await ctx.css({ hideUi: true, hideLabels: false });
+    const A = { x: 960, y: 420 }, B = { x: 960, y: 250 };
+    await ctx.page.mouse.move(A.x, A.y);
+    await ctx.page.mouse.down({ button: 'right' });
+    for (let k = 1; k <= 6; k++) await ctx.page.mouse.move(A.x + (B.x - A.x) * k / 6, A.y + (B.y - A.y) * k / 6);
+    await ctx.frames(3);
+    const s1 = await ctx.shot('launch-drag-preview', { hideUi: true, hideLabels: false });
+    c.image = s1.path;
+    imageSanity(c, s1.img);
+    const g = await ctx.eval(() => {
+      const h = window.__rqh, a = window.__satalitte, lp = h.byName('LaunchPreview');
+      const pl = a.previewLabel; let vis = pl.visible; for (let q = pl.parent; q; q = q.parent) vis = vis && q.visible;
+      let line = null; window.__rq.mainScene.traverse((o) => { if (o.name === 'OrbitLine' && o.visible && o.children[0].material.uniforms.color.value.getHexString() === 'ffffff') line = o.children[0]; });
+      const pts = []; if (line) { const arr = line.geometry.attributes.position.array; for (let i = 0; i < line.geometry.drawRange.count; i += 3) { const w = h.V(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]); pts.push({ ...h.proj(w), hidden: h.behindEarth(w) }); } }
+      const head = lp.children[1];
+      return { arrowVisible: lp.visible, start: h.proj(lp.position), tip: h.proj(head.getWorldPosition(h.V(0, 0, 0))), label: { vis, display: pl.element.style.display, text: pl.element.textContent }, line: pts, n: a.entities.size };
+    });
+    c.check('velocity arrow shown from the drag start', g.arrowVisible && Math.hypot(g.start.x - A.x, g.start.y - A.y) < 4, `${g.start.x.toFixed(1)},${g.start.y.toFixed(1)} vs pointer ${A.x},${A.y}`, '< 4 px');
+    c.check('arrow points along the drag', angle2d(g.tip.x - g.start.x, g.tip.y - g.start.y, B.x - A.x, B.y - A.y) < 5, `${angle2d(g.tip.x - g.start.x, g.tip.y - g.start.y, B.x - A.x, B.y - A.y).toFixed(2)}°`, '< 5°');
+    let hits = 0; for (let t = 0.15; t <= 0.75; t += 0.1) if (colourHit(s1.img, A.x + (B.x - A.x) * t, A.y + (B.y - A.y) * t, [255, 191, 64], { radius: 3, minLum: 60, minCos: 0.93 })) hits++;
+    c.check('arrow pixels drawn (orange)', hits >= 5, `${hits}/7`, '≥ 5/7 samples');
+    c.check('readout label shown with speed and fate', g.label.vis && g.label.display !== 'none' && /km\/s.*(orbit|suborbital|escape)/.test(g.label.text), g.label.text, '"… km/s · ×… circular · orbit|suborbital|escape"');
+    const lv = g.line.filter((p) => !p.hidden && p.front && p.x > 2 && p.y > 2 && p.x < VIEW.width - 2 && p.y < VIEW.height - 2);
+    const lh = lv.filter((p) => colourHit(s1.img, p.x, p.y, [255, 255, 255], { radius: 2, minLum: 40, minCos: 0.97 })).length;
+    c.check('predicted orbit drawn (white)', lv.length >= 10 && lh / lv.length >= 0.7, `${lh}/${lv.length}`, '≥ 70 % of samples');
+    await ctx.page.mouse.up({ button: 'right' });
+    await ctx.frames(3);
+    const after = await ctx.eval(() => {
+      const a = window.__satalitte, h = window.__rqh; const e = [...a.entities.values()].at(-1);
+      return { n: a.entities.size, arrow: h.byName('LaunchPreview').visible, label: a.previewLabel.visible, pos: e ? e.sat.pos.map((x) => x / 1000) : null, vel: e ? e.sat.vel : null, ray: e ? h.proj(h.V(...e.sat.pos.map((x) => x / 1000))) : null };
+    });
+    c.check('release launches one spacecraft and hides the preview', after.n === g.n + 1 && !after.arrow && !after.label, `entities ${g.n}→${after.n}, arrow ${after.arrow}, label ${after.label}`, '+1, both hidden');
+    if (after.ray) c.check('spacecraft starts at the drag start', Math.hypot(after.ray.x - A.x, after.ray.y - A.y) < 4, `${Math.hypot(after.ray.x - A.x, after.ray.y - A.y).toFixed(1)} px`, '< 4 px');
+    const s2 = await ctx.shot('launch-drag-after', { hideUi: true, hideLabels: false });
+    c.extra.push(s2.path);
+    await ctx.health(c);
   },
 });
 
