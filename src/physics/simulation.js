@@ -1,12 +1,14 @@
 // Earth–Moon–satellite simulation.
 //
 // Frame: geocentric, equatorial, +Y = north (see docs/ARCHITECTURE.md).
-// * The Moon follows an exact two-body Kepler orbit about the Earth
-//   (μ = μEarth + μMoon), initialised from a low-precision ephemeris.
+// * The Moon and the Sun follow low-precision analytic ephemerides (~0.3° and
+//   ~0.01°), so the Moon stays on its real, solar-perturbed path for any date.
+//   Within a frame both are evaluated at three instants and interpolated with a
+//   quadratic (error < 0.05 km for the Moon even at the largest frame step).
 // * Satellites are test particles. In the (accelerating) geocentric frame they
-//   feel Earth gravity + J2 oblateness, the Moon's direct pull minus the pull the
-//   Moon exerts on the Earth (indirect term), and drag from an exponential
-//   atmosphere that co-rotates with the Earth.
+//   feel Earth gravity + J2 oblateness, the Moon's and the Sun's direct pull minus
+//   the pull each exerts on the Earth (indirect terms), and drag from an
+//   exponential atmosphere that co-rotates with the Earth.
 // * Each satellite is integrated independently with a 4th-order symplectic
 //   (Yoshida) scheme and an adaptive step: a small fraction of the local
 //   dynamical time, of the time to the Moon, and of the drag time scale.
@@ -15,12 +17,12 @@
 //   burns (circularize, Hohmann) are paid for with the rocket equation.
 
 import {
-  ATMOSPHERE_TOP, DEG, ESCAPE_DISTANCE, J2_EARTH, MOON_SOI, MU_EARTH, MU_MOON,
-  OMEGA_EARTH, R_EARTH, R_EARTH_EQ, R_MOON,
+  ATMOSPHERE_TOP, DEG, ESCAPE_DISTANCE, J2_EARTH, MOON_SOI, MU_EARTH, MU_MOON, MU_SUN,
+  OMEGA_EARTH, R_EARTH, R_EARTH_EQ, R_MOON, R_SUN,
 } from './constants.js';
 import { density } from './atmosphere.js';
-import { gmst, moonPosition, moonVelocity, sunDirection } from './ephemeris.js';
-import { KeplerOrbit, elementsFromState, maneuverFrame } from './orbit.js';
+import { gmst, moonPosition, moonVelocity, sunDirection, sunPosition } from './ephemeris.js';
+import { elementsFromState, maneuverFrame } from './orbit.js';
 import { addScaled, copy, cross, dist, dot, len, normalize, rotateY, scale, sub, vec } from './vec.js';
 
 // Yoshida 4th-order coefficients.
@@ -54,24 +56,27 @@ export class Simulation {
   /**
    * @param {object} opts
    * @param {Date}   [opts.startDate]  simulation epoch (default: now)
-   * @param {object} [opts.physics]    { drag, j2, moonGravity } booleans (live-editable)
+   * @param {object} [opts.physics]    { drag, j2, moonGravity, sunGravity } booleans (live-editable)
    */
   constructor({ startDate = new Date(), physics = {} } = {}) {
     this.epochMs = startDate.getTime();
     this.time = 0; // seconds since epoch
-    this.physics = { drag: true, j2: true, moonGravity: true, throttle: 100, ...physics };
+    this.physics = { drag: true, j2: true, moonGravity: true, sunGravity: true, throttle: 100, ...physics };
     this.satellites = [];
 
-    const r0 = moonPosition(this.epochMs);
-    const v0 = moonVelocity(this.epochMs);
-    this.moonOrbit = new KeplerOrbit(r0, v0, MU_EARTH + MU_MOON);
     this.moonPos = vec();
     this.moonVel = vec();
-    this.moonOrbit.at(0, this.moonPos, this.moonVel);
+    this.sunPos = vec();
+    // Per-frame quadratic interpolants p(s) = A + B·s + C·s², s = (t − tm) / half ∈ [−1, 1].
+    this._moonQ = { A: vec(), B: vec(), C: vec() };
+    this._sunQ = { A: vec(), B: vec(), C: vec() };
+    this._tm = 0; this._half = 0;
+    this._syncBodies();
+    this._prepareFrame(0, 0);
 
     // scratch vectors for the hot path
     this._a = vec(); this._m = vec(); this._mv = vec(); this._d = vec(); this._rel = vec();
-    this._thrustDir = vec();
+    this._s = vec(); this._thrustDir = vec();
   }
 
   get dateMs() { return this.epochMs + this.time * 1000; }
@@ -82,6 +87,56 @@ export class Simulation {
 
   /** Unit vector toward the Sun (world frame). */
   sunDirection() { return sunDirection(this.dateMs); }
+
+  // ---------------------------------------------------------------- ephemerides
+
+  /** Exact geocentric Moon position (and optionally velocity) at sim time t (s). */
+  moonAt(t, outPos = vec(), outVel) {
+    const ms = this.epochMs + t * 1000;
+    copy(outPos, moonPosition(ms));
+    if (outVel) copy(outVel, moonVelocity(ms));
+    return outPos;
+  }
+
+  /** Moon and Sun state at the current time (exact). */
+  _syncBodies() {
+    this.moonAt(this.time, this.moonPos, this.moonVel);
+    copy(this.sunPos, sunPosition(this.dateMs));
+  }
+
+  /** Fit the in-frame quadratic interpolants of the Moon and Sun positions over [t0, t1]. */
+  _prepareFrame(t0, t1) {
+    const tm = (t0 + t1) / 2, half = (t1 - t0) / 2;
+    this._tm = tm; this._half = half;
+    const fit = (q, f) => {
+      const p0 = f(t0), pm = f(tm), p1 = f(t1);
+      for (let k = 0; k < 3; k++) {
+        q.A[k] = pm[k];
+        q.B[k] = (p1[k] - p0[k]) / 2;
+        q.C[k] = (p1[k] + p0[k]) / 2 - pm[k];
+      }
+    };
+    fit(this._moonQ, (t) => moonPosition(this.epochMs + t * 1000));
+    fit(this._sunQ, (t) => sunPosition(this.epochMs + t * 1000));
+  }
+
+  /** Interpolated body position (and velocity) inside the current frame. */
+  _interp(q, t, outPos, outVel) {
+    const s = this._half > 0 ? (t - this._tm) / this._half : 0;
+    const s2 = s * s;
+    outPos[0] = q.A[0] + q.B[0] * s + q.C[0] * s2;
+    outPos[1] = q.A[1] + q.B[1] * s + q.C[1] * s2;
+    outPos[2] = q.A[2] + q.B[2] * s + q.C[2] * s2;
+    if (outVel) {
+      const k = this._half > 0 ? 1 / this._half : 0;
+      outVel[0] = (q.B[0] + 2 * q.C[0] * s) * k;
+      outVel[1] = (q.B[1] + 2 * q.C[1] * s) * k;
+      outVel[2] = (q.B[2] + 2 * q.C[2] * s) * k;
+    }
+    return outPos;
+  }
+
+  _moonFast(t, outPos, outVel) { return this._interp(this._moonQ, t, outPos, outVel); }
 
   // ---------------------------------------------------------------- objects
 
@@ -144,7 +199,7 @@ export class Simulation {
     }
 
     if (this.physics.moonGravity) {
-      const m = this.moonOrbit.at(t, this._m);
+      const m = this._moonFast(t, this._m);
       const d = sub(this._d, m, r); // satellite → Moon
       const d2 = dot(d, d), dm = Math.sqrt(d2);
       const kd = MU_MOON / (d2 * dm);
@@ -153,6 +208,18 @@ export class Simulation {
       out[0] += kd * d[0] - km * m[0];
       out[1] += kd * d[1] - km * m[1];
       out[2] += kd * d[2] - km * m[2];
+    }
+
+    if (this.physics.sunGravity) {
+      const sp = this._interp(this._sunQ, t, this._s);
+      const dx = sp[0] - x, dy = sp[1] - y, dz = sp[2] - z; // satellite → Sun
+      const d2 = dx * dx + dy * dy + dz * dz;
+      const kd = MU_SUN / (d2 * Math.sqrt(d2));
+      const s2 = dot(sp, sp);
+      const ks = MU_SUN / (s2 * Math.sqrt(s2)); // indirect term: the Sun also accelerates the Earth
+      out[0] += kd * dx - ks * sp[0];
+      out[1] += kd * dy - ks * sp[1];
+      out[2] += kd * dz - ks * sp[2];
     }
 
     if (this.physics.drag && sat.drag) {
@@ -184,7 +251,7 @@ export class Simulation {
   _thrustAccel(out, r, v, t, sat) {
     let rr = r, vv = v;
     if (sat.central === 'moon') {
-      this.moonOrbit.at(t, this._m, this._mv);
+      this._moonFast(t, this._m, this._mv);
       rr = sub(this._rel, r, this._m);
       vv = sub(this._d, v, this._mv);
     }
@@ -196,8 +263,7 @@ export class Simulation {
     }
     const l = len(dir);
     if (l < 1e-9) return;
-    const accel = (sat.thrustN * this.physics.throttle / 100) / (sat.dryMass + sat.fuel) / 1000; // km/s²
-    addScaled(out, out, dir, accel / l);
+    addScaled(out, out, dir, sat._thrustA / l); // km/s², set per step in _advance
     scale(sat.thrustDirWorld, dir, 1 / l);
   }
 
@@ -206,7 +272,7 @@ export class Simulation {
     const r = len(sat.pos);
     let dt = ETA * Math.sqrt((r * r * r) / MU_EARTH);
     if (this.physics.moonGravity) {
-      const dm = dist(sat.pos, this.moonOrbit.at(t, this._m));
+      const dm = dist(sat.pos, this._moonFast(t, this._m));
       dt = Math.min(dt, ETA * Math.sqrt((dm * dm * dm) / MU_MOON));
     }
     if (sat._aDrag > 1e-4) {
@@ -248,16 +314,18 @@ export class Simulation {
     }
 
     // Estimate the cost and throttle the warp if it would exceed the budget.
+    this._prepareFrame(this.time, this.time); // degenerate fit = current Moon, for the estimate
     let cost = 0;
     for (const s of active) cost += 3 * Math.ceil(simDt / this._stepSize(s, this.time));
     const warpLimited = cost > EVAL_BUDGET || effWarp < warp;
     if (cost > EVAL_BUDGET) simDt *= EVAL_BUDGET / cost;
 
     const t0 = this.time, t1 = t0 + simDt;
+    this._prepareFrame(t0, t1);
     for (const sat of active) this._advance(sat, t0, t1, events);
 
     this.time = t1;
-    this.moonOrbit.at(this.time, this.moonPos, this.moonVel);
+    this._syncBodies();
     for (const sat of active) if (sat.alive) sat.status = this._classify(sat);
     return { events, warpLimited, simDt };
   }
@@ -269,19 +337,27 @@ export class Simulation {
     for (let iter = 0; t < t1; iter++) {
       // Hard cap per frame: if the estimate was wrong, stretch the steps rather than stall.
       const floor = (t1 - t) / Math.max(1, MAX_ITER - iter);
-      const h = Math.min(Math.max(this._stepSize(sat, t), floor), t1 - t);
+      let h = Math.min(Math.max(this._stepSize(sat, t), floor), t1 - t);
+      let F = 0, mdot = 0;
+      if (sat._thrusting) {
+        // Propellant flow ṁ = F / (Isp·g0). End the step exactly when the tank runs dry,
+        // and use the mid-step mass so Σ F/m·h reproduces the rocket equation.
+        F = sat.thrustN * this.physics.throttle / 100;
+        mdot = F / (sat.isp * G0);
+        h = Math.min(h, sat.fuel / mdot);
+        sat._thrustA = F / (sat.dryMass + sat.fuel - 0.5 * mdot * h) / 1000; // km/s²
+      }
+      // Land a step exactly on the scheduled autopilot burn.
+      if (sat.autopilot && sat.autopilot.fireAt - t > 1e-6) h = Math.min(h, sat.autopilot.fireAt - t);
       copy(prev, sat.pos);
-      const rv0 = dot(sat.pos, sat.vel);
+      const tPrev = t;
       this._yoshida(sat, t, h);
       t += h;
       if (sat._q > peakHeat) peakHeat = sat._q;
 
       if (sat._thrusting) {
-        // Propellant flow ṁ = F / (Isp·g0); Δv bookkeeping in m/s.
-        const F = sat.thrustN * this.physics.throttle / 100;
-        const used = Math.min(sat.fuel, (F / (sat.isp * G0)) * h);
-        sat.deltaVUsed += (F / (sat.dryMass + sat.fuel)) * h;
-        sat.fuel -= used;
+        sat.deltaVUsed += sat._thrustA * 1000 * h; // m/s, exactly what was applied
+        sat.fuel -= mdot * h;
         if (sat.fuel <= 1e-9) {
           sat.fuel = 0;
           sat._thrusting = false;
@@ -289,15 +365,15 @@ export class Simulation {
           events.push({ type: 'fuelOut', id: sat.id, name: sat.name });
         }
       }
-      if (sat.autopilot) this._autopilotCheck(sat, rv0, events);
+      if (sat.autopilot && t >= sat.autopilot.fireAt - 1e-6) this._autopilotFire(sat, t, events);
 
       const r = len(sat.pos);
       if (r < R_EARTH) {
-        this._impact(sat, 'earth', prev, t, events);
+        this._impact(sat, 'earth', prev, tPrev, t, events);
         return;
       }
-      if (dist(sat.pos, this.moonOrbit.at(t, this._m)) < R_MOON) {
-        this._impact(sat, 'moon', prev, t, events);
+      if (dist(sat.pos, this._moonFast(t, this._m)) < R_MOON) {
+        this._impact(sat, 'moon', prev, tPrev, t, events);
         return;
       }
       if (r > ESCAPE_DISTANCE) {
@@ -312,19 +388,22 @@ export class Simulation {
     sat.heating = Math.min(1, Math.sqrt(peakHeat / 2e5));
   }
 
-  /** Fires the pending circularization burn when the craft passes the target apsis. */
-  _autopilotCheck(sat, rv0, events) {
-    const rv1 = dot(sat.pos, sat.vel);
-    const passed = sat.autopilot.at === 'apo' ? rv0 > 0 && rv1 <= 0 : rv0 < 0 && rv1 >= 0;
-    if (!passed) return;
-    sat.autopilot = null;
-    const dv = this.circularize(sat.id);
-    events.push({ type: 'burn', id: sat.id, name: sat.name, label: 'Hohmann burn 2: circularized', dvMs: dv });
+  /**
+   * Fires the pending circularization burn half a transfer period after burn 1,
+   * i.e. at the opposite apsis. (Watching for a sign change of r·v instead is
+   * fooled by J2's short-period radial wobble on small transfers.)
+   */
+  _autopilotFire(sat, t, events) {
+    const dv = this._circularize(sat, t); // also clears the autopilot
+    const label = dv > 0 ? 'Hohmann burn 2: circularized' : 'Hohmann burn 2 skipped: no propellant';
+    events.push({ type: 'burn', id: sat.id, name: sat.name, label, dvMs: dv });
   }
 
-  _impact(sat, body, prev, t, events) {
-    // Place the impact on the surface along the last step's segment.
-    const center = body === 'earth' ? [0, 0, 0] : this.moonOrbit.at(t, vec());
+  _impact(sat, body, prev, tPrev, t, events) {
+    // Place the impact on the surface along the last step's segment, measured in
+    // the body's frame (the Moon moves ~1 km/s during the step).
+    const center = body === 'earth' ? [0, 0, 0] : this.moonAt(t);
+    if (body === 'moon') addScaled(prev, prev, sub(vec(), center, this.moonAt(tPrev)), 1);
     const radius = body === 'earth' ? R_EARTH : R_MOON;
     const p = intersectSphere(prev, sat.pos, center, radius) || sat.pos;
     copy(sat.pos, p);
@@ -349,18 +428,23 @@ export class Simulation {
 
   _moonVelAt(t) {
     const v = vec();
-    this.moonOrbit.at(t, vec(), v);
+    this.moonAt(t, vec(), v);
     return v;
   }
 
   // ---------------------------------------------------------------- analysis
 
-  /** Which body dominates the object's motion, and its relative state. */
-  relativeState(sat) {
-    if (dist(sat.pos, this.moonPos) < MOON_SOI) {
+  /**
+   * Which body dominates the object's motion, and its relative state. `t` is
+   * only passed from inside a frame (autopilot), where the Moon has moved on.
+   */
+  relativeState(sat, t = this.time) {
+    let mp = this.moonPos, mv = this.moonVel;
+    if (t !== this.time) { mp = vec(); mv = vec(); this._moonFast(t, mp, mv); }
+    if (dist(sat.pos, mp) < MOON_SOI) {
       return {
         central: 'moon', mu: MU_MOON, radius: R_MOON,
-        r: sub(vec(), sat.pos, this.moonPos), v: sub(vec(), sat.vel, this.moonVel), origin: this.moonPos,
+        r: sub(vec(), sat.pos, mp), v: sub(vec(), sat.vel, mv), origin: mp,
       };
     }
     return { central: 'earth', mu: MU_EARTH, radius: R_EARTH, r: [...sat.pos], v: [...sat.vel], origin: [0, 0, 0] };
@@ -372,17 +456,68 @@ export class Simulation {
     return { ...rs, el: elementsFromState(rs.r, rs.v, rs.mu) };
   }
 
-  /** Moon orbit (relative to Earth) as elements. */
-  moonElements() { return this.moonOrbit.el; }
+  /**
+   * Osculating Moon orbit about the Earth (μ = μEarth + μMoon) at the current
+   * time. The real Moon is perturbed by the Sun, so this ellipse slowly changes.
+   */
+  moonElements() {
+    if (this._moonElTime !== this.time) {
+      this._moonEl = elementsFromState(this.moonPos, this.moonVel, MU_EARTH + MU_MOON);
+      this._moonElTime = this.time;
+    }
+    return this._moonEl;
+  }
 
   _classify(sat) {
-    const { el, radius, central } = this.orbitOf(sat);
-    if (el.energy >= 0) return 'escaping';
-    if (central === 'earth' && el.apoapsis > ESCAPE_DISTANCE) return 'escaping';
-    // Periapsis inside the surface, or deep in the atmosphere → will come down.
+    const { el, radius, central, r, v } = this.orbitOf(sat);
+    // Periapsis inside the surface, or deep in the atmosphere → will come down,
+    // unless the craft is on an open path and already past periapsis.
     const floor = central === 'earth' && this.physics.drag && sat.drag ? radius + 90 : radius;
-    if (el.periapsis < floor) return 'suborbital';
+    if (el.periapsis < floor && (el.energy < 0 || dot(r, v) < 0)) return 'suborbital';
+    if (el.energy >= 0) {
+      if (central === 'moon') {
+        // A hyperbolic lunar flyby: still captive if it is bound to the Earth.
+        const geo = elementsFromState(sat.pos, sat.vel, MU_EARTH);
+        if (geo.energy < 0 && geo.apoapsis < ESCAPE_DISTANCE) return 'orbiting';
+      }
+      return 'escaping';
+    }
+    if (central === 'earth' && el.apoapsis > ESCAPE_DISTANCE) return 'escaping';
     return 'orbiting';
+  }
+
+  /**
+   * Fraction (0..1) of the solar disc visible from a geocentric point, with the
+   * Earth and the Moon as occulting discs (conical umbra/penumbra model,
+   * Montenbruck & Gill §3.4.2). Returns { sunlight, inShadow, shadowBody }.
+   */
+  illumination(p, skip) {
+    let sunlight = 1, shadowBody = null, inShadow = false;
+    const toSun = sub(vec(), this.sunPos, p);
+    const ds = len(toSun);
+    const a = Math.asin(Math.min(1, R_SUN / ds)); // apparent solar radius
+    for (const [body, c, R] of [['earth', [0, 0, 0], R_EARTH], ['moon', this.moonPos, R_MOON]]) {
+      if (body === skip) continue;
+      const toBody = sub(vec(), c, p);
+      const db = len(toBody);
+      if (db <= R) continue;
+      const b = Math.asin(R / db); // apparent radius of the occulting body
+      const cAng = Math.acos(Math.max(-1, Math.min(1, dot(toBody, toSun) / (db * ds))));
+      let f = 1;
+      if (cAng >= a + b) f = 1;                       // clear
+      else if (cAng <= b - a) f = 0;                  // umbra
+      else if (cAng <= a - b) f = 1 - (b * b) / (a * a); // annular (body inside the solar disc)
+      else {                                          // penumbra: overlap of two discs
+        const x = (cAng * cAng + a * a - b * b) / (2 * cAng);
+        const y = Math.sqrt(Math.max(0, a * a - x * x));
+        const area = a * a * Math.acos(Math.max(-1, Math.min(1, x / a)))
+          + b * b * Math.acos(Math.max(-1, Math.min(1, (cAng - x) / b))) - cAng * y;
+        f = 1 - area / (Math.PI * a * a);
+      }
+      if (cAng < b) inShadow = true; // the Sun's centre is hidden
+      if (f < sunlight) { sunlight = Math.max(0, f); shadowBody = body; }
+    }
+    return { sunlight, inShadow, shadowBody: sunlight < 1 ? shadowBody : null };
   }
 
   /** Telemetry for the UI (see docs/ARCHITECTURE.md). */
@@ -390,7 +525,8 @@ export class Simulation {
     const none = {
       raanDeg: NaN, argpDeg: NaN, trueAnomalyDeg: NaN, flightPathAngleDeg: NaN, densityKgM3: NaN,
       j2Accel: NaN, gravityAccel: NaN, escapeVelocityKms: NaN, fuelKg: NaN, maxFuelKg: NaN,
-      dvRemainingMs: NaN, thrustN: NaN, metS: this.time, autopilot: null,
+      dvRemainingMs: NaN, thrustN: NaN, metS: this.time, autopilot: null, autopilotEtaS: NaN,
+      sunlight: 1, inShadow: false, shadowBody: null,
     };
     if (id === 'earth') {
       return {
@@ -403,10 +539,10 @@ export class Simulation {
       };
     }
     if (id === 'moon') {
-      const el = elementsFromState(this.moonPos, this.moonVel, MU_EARTH + MU_MOON);
+      const el = this.moonElements();
       const r = len(this.moonPos);
       return {
-        ...none, ...orientation(el, this.moonPos, this.moonVel),
+        ...none, ...orientation(el, this.moonPos, this.moonVel), ...this.illumination(this.moonPos, 'moon'),
         gravityAccel: (MU_MOON / R_MOON ** 2) * 1000, escapeVelocityKms: Math.sqrt((2 * MU_MOON) / R_MOON),
         id, name: 'Moon', kind: 'moon', color: '#c9c9c9', centralBody: 'Earth',
         altitudeKm: r - R_EARTH, speedKms: len(this.moonVel),
@@ -428,6 +564,7 @@ export class Simulation {
       : 0;
     return {
       ...orientation(el, r, v),
+      ...this.illumination(sat.pos),
       densityKgM3: altEarth < ATMOSPHERE_TOP ? density(altEarth) : 0,
       j2Accel,
       gravityAccel: (mu / (rMag * rMag)) * 1000,
@@ -435,6 +572,7 @@ export class Simulation {
       fuelKg: sat.fuel, maxFuelKg: sat.maxFuel, dvRemainingMs: this.deltaVRemaining(sat),
       thrustN: sat.thrustN * this.physics.throttle / 100, metS: this.time - sat.createdAt,
       autopilot: sat.autopilot ? `Circularize at ${sat.autopilot.at === 'apo' ? 'apoapsis' : 'periapsis'}` : null,
+      autopilotEtaS: sat.autopilot ? Math.max(0, sat.autopilot.fireAt - this.time) : NaN,
       id, name: sat.name, kind: sat.kind, color: sat.color,
       centralBody: central === 'moon' ? 'Moon' : 'Earth',
       altitudeKm: rMag - radius,
@@ -503,7 +641,12 @@ export class Simulation {
   circularize(id) {
     const sat = this.get(id);
     if (!sat || !sat.alive) return 0;
-    const { r, v, mu } = this.relativeState(sat);
+    return this._circularize(sat, this.time);
+  }
+
+  _circularize(sat, t) {
+    sat.autopilot = null; // a manual circularization supersedes a pending Hohmann burn
+    const { r, v, mu } = this.relativeState(sat, t);
     const f = maneuverFrame(r, v);
     // Horizontal direction in the current plane: normal × radial.
     const horiz = cross(vec(), f.normal, normalize(vec(), r));
@@ -523,8 +666,15 @@ export class Simulation {
     const f = maneuverFrame(r, v);
     const horiz = cross(vec(), f.normal, normalize(vec(), r));
     const vT = Math.sqrt(mu * (2 / r1 - 2 / (r1 + r2)));
+    sat.autopilot = null;
     const dv = this._burn(sat, sub(vec(), scale(vec(), horiz, vT), v));
-    if (dv > 0 && Math.abs(r2 - r1) > 1) sat.autopilot = { type: 'hohmann', at: r2 > r1 ? 'apo' : 'peri', targetAltKm };
+    if (dv > 0 && Math.abs(r2 - r1) > 1) {
+      const aT = (r1 + r2) / 2;
+      sat.autopilot = {
+        type: 'hohmann', at: r2 > r1 ? 'apo' : 'peri', targetAltKm,
+        fireAt: this.time + Math.PI * Math.sqrt((aT * aT * aT) / mu),
+      };
+    }
     return dv;
   }
 

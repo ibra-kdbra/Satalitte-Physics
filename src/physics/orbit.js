@@ -72,7 +72,7 @@ export function solveKepler(M, e, guess = M) {
 }
 
 /**
- * Exact two-body propagator for a bound orbit, used for the Moon. Positions and
+ * Exact two-body propagator for a bound orbit. Positions and
  * velocities are relative to the primary.
  */
 export class KeplerOrbit {

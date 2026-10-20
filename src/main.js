@@ -38,7 +38,7 @@ const DEFAULT_SETTINGS = {
     quality: coarse ? 'low' : 'high', bloom: !coarse, labels: true, trails: true, trailLength: 2000,
     orbits: true, clouds: true, atmosphere: true, cityLights: true, markers: true, targetRing: true,
   },
-  physics: { drag: true, j2: true, moonGravity: true, throttle: 100 },
+  physics: { drag: true, j2: true, moonGravity: true, sunGravity: true, throttle: 100 },
 };
 
 function loadSettings() {
@@ -217,6 +217,7 @@ function bodyFocus(id) {
       const rel = sim.relativeState(e.sat).v;
       return toVec3(rel, out);
     },
+    getCentral: (out) => (e.sat.central === 'moon' ? out.copy(moonRender) : out.set(0, 0, 0)),
   };
 }
 
@@ -287,6 +288,7 @@ function select(id) {
   if (selectedId && !PLANET_IDS.has(selectedId)) sim.setThrust(selectedId, []);
   selectedId = id;
   uiThrust.clear();
+  input?.held.clear(); // a key held for the old craft must not fire the new one
   hud.setSelection?.(id);
   hud.clearHistory?.();
   historyClock = -Infinity;
@@ -518,7 +520,9 @@ function hideOccludedLabels() {
 /** Add a trail point once the object has moved far enough (keeps trails smooth at any warp). */
 function pushTrail(trail, p, e) {
   const last = e ? e.last : (trail.last || (trail.last = p.clone()));
-  const spacing = Math.max(0.01, p.length() * 0.004);
+  // Spacing relative to the nearer body, so lunar orbits get as many points as Earth orbits.
+  const ref = e ? Math.min(p.length(), p.distanceTo(moonRender)) : p.length();
+  const spacing = Math.max(0.01, ref * 0.004);
   if (last.distanceToSquared(p) >= spacing * spacing) {
     trail.push(p.x, p.y, p.z);
     last.copy(p);
@@ -542,16 +546,19 @@ function updateOrbitLine(line, sat) {
   }
 }
 
-let moonOrbitDone = false;
+let moonOrbitDone = false, moonOrbitTime = 0;
 function updateMoonOrbit() {
   moonOrbitLine.setVisible(settings.graphics.orbits);
+  // The Sun perturbs the Moon's path: refresh its osculating ellipse every 6 h of sim time.
+  if (Math.abs(sim.time - moonOrbitTime) > 6 * 3600) moonOrbitDone = false;
   if (moonOrbitDone || !settings.graphics.orbits) return;
+  moonOrbitTime = sim.time;
   const el = sim.moonElements();
   const buf = new Float32Array(ORBIT_SEGMENTS * 3);
   const { count, closed } = sampleConic(el, buf, ORBIT_SEGMENTS, UNIT, [0, 0, 0], 1e7);
   moonOrbitLine.setPoints(buf, count, closed);
   moonOrbitLine.setApsides(null, null);
-  moonOrbitDone = true; // the Moon's two-body orbit is fixed
+  moonOrbitDone = true;
 }
 
 /** Ascending/descending node positions (km, relative to the central body). */

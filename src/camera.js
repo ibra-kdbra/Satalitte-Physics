@@ -27,12 +27,12 @@ export class CameraRig {
     c.maxDistance = 8000;
 
     this.mode = 'orbit';
-    this.focus = null;          // { getPosition(out), radius, kind, getVelocity?(out) }
+    this.focus = null;          // { getPosition(out), radius, kind, getVelocity?(out), getCentral?(out) }
     this.lastFocusPos = new Vector3();
     this.fly = null;            // active fly-to animation
     this.chaseOffset = new Vector3();
     this._p = new Vector3(); this._v = new Vector3(); this._up = new Vector3();
-    this._dir = new Vector3(); this._goal = new Vector3();
+    this._dir = new Vector3(); this._goal = new Vector3(); this._c = new Vector3();
   }
 
   /** Comfortable viewing distance for a body (render units). */
@@ -138,20 +138,22 @@ export class CameraRig {
   /** Looking straight down at the ground track from above the craft; screen-up = direction of flight. */
   _updateNadir(pos, dt) {
     const vel = this.focus.getVelocity(this._v).normalize();
-    const up = this._up.copy(pos).normalize();
+    const central = this.focus.getCentral ? this.focus.getCentral(this._c) : this._c.set(0, 0, 0);
+    const up = this._up.subVectors(pos, central).normalize();
     const goal = this._goal.copy(up).multiplyScalar(0.65);
     const k = 1 - Math.exp(-dt * 5);
     this._approach(goal, k);
     this.camera.position.copy(pos).add(this.chaseOffset);
     this.camera.up.lerp(vel, k).normalize();
-    this.controls.target.set(0, 0, 0);
+    this.controls.target.copy(central); // look straight down at the body being orbited
     this.camera.lookAt(this.controls.target);
     this.lastFocusPos.copy(pos);
   }
 
   _updateChase(pos, dt) {
     const vel = this.focus.getVelocity(this._v).normalize();
-    const up = this._up.copy(pos).normalize(); // radial out
+    const central = this.focus.getCentral ? this.focus.getCentral(this._c) : this._c.set(0, 0, 0);
+    const up = this._up.subVectors(pos, central).normalize(); // radial out from the body being orbited
     // Behind and slightly above the craft, looking past it toward the horizon.
     // ~350 m behind and 120 m above: close enough to see the spacecraft model itself.
     const goal = this._goal.copy(vel).multiplyScalar(-0.00035).addScaledVector(up, 0.00012);

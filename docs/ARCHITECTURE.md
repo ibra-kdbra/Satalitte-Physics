@@ -270,12 +270,16 @@ shortcuts must not fire while typing in inputs (main checks
 
 ## Physics module (lead) — `src/physics/`
 
-`Simulation` (pure JS): Earth + Moon as mutually attracting bodies around the
-barycentre, satellites as test particles feeling Earth (+ J2) and Moon,
-exponential atmosphere drag in the co-rotating atmosphere, leapfrog (KDK)
+`Simulation` (pure JS, geocentric frame): the Moon and the Sun follow
+low-precision analytic ephemerides (Moon ~0.3°, Sun ~0.01°, interpolated
+quadratically inside each frame), the Earth turns at GMST. Satellites are test
+particles feeling Earth (+ J2), the Moon and the Sun (direct + indirect terms),
+exponential atmosphere drag in the co-rotating atmosphere; 4th-order Yoshida
 integration with adaptive sub-stepping, impact / escape detection, orbital
-elements, low-precision ephemerides so the simulation starts with the real
-Sun direction, Earth rotation (GMST) and Moon position for "now".
+elements, Earth/Moon shadow (conical umbra/penumbra). Physics flags:
+`{ drag, j2, moonGravity, sunGravity, throttle }` (`sunGravity` defaults to true).
+`sim.moonElements()` is the Moon's *osculating* orbit at the current time (it
+slowly changes; redraw it periodically).
 
 ---
 
@@ -301,7 +305,11 @@ navball, ground track and altitude/speed chart instruments. Settings: `physics.t
 (5–100 %) replaces `thrustRate`; new `graphics.markers`, `graphics.targetRing`.
 Telemetry adds `raanDeg, argpDeg, trueAnomalyDeg, flightPathAngleDeg,
 densityKgM3, j2Accel, gravityAccel, escapeVelocityKms, fuelKg, maxFuelKg,
-dvRemainingMs, thrustN, metS, autopilot`.
+dvRemainingMs, thrustN, metS, autopilot, autopilotEtaS /*s until Hohmann burn 2*/,
+sunlight /*0..1 visible fraction of the solar disc*/, inShadow /*bool: Sun's centre
+hidden by Earth or Moon*/, shadowBody /*'earth'|'moon'|null*/`. Hohmann burn 2 is
+scheduled half a transfer period after burn 1 (r·v sign changes are unreliable
+under J2).
 
 **Render** additions: satellite plume (`thrustDir` in `update`), dashed
 `OrbitLine` option + `setNodes(an, dn)`, `src/render/grid.js` equatorial grid.

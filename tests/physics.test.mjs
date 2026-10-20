@@ -28,7 +28,7 @@ test('elements round-trip through state vectors', () => {
 });
 
 test('two-body circular orbit closes after one period and conserves energy', () => {
-  const sim = new Simulation({ startDate: START, physics: { drag: false, j2: false, moonGravity: false } });
+  const sim = new Simulation({ startDate: START, physics: { drag: false, j2: false, moonGravity: false, sunGravity: false } });
   const s0 = stateFromElements({ a: R_EARTH + 400, e: 0, i: 0.9 }, MU_EARTH);
   const sat = sim.addSatellite({ ...s0 });
   const E0 = elementsFromState(sat.pos, sat.vel, MU_EARTH).energy;
@@ -40,7 +40,7 @@ test('two-body circular orbit closes after one period and conserves energy', () 
 });
 
 test('eccentric orbit keeps its energy over 20 orbits (symplectic integrator)', () => {
-  const sim = new Simulation({ startDate: START, physics: { drag: false, j2: false, moonGravity: false } });
+  const sim = new Simulation({ startDate: START, physics: { drag: false, j2: false, moonGravity: false, sunGravity: false } });
   const sat = sim.addSatellite(stateFromElements({ a: 26600, e: 0.74, i: 1.1, argp: 4.7 }, MU_EARTH));
   const E0 = elementsFromState(sat.pos, sat.vel, MU_EARTH).energy;
   run(sim, 20 * 43080, 600);
@@ -49,7 +49,7 @@ test('eccentric orbit keeps its energy over 20 orbits (symplectic integrator)', 
 });
 
 test('J2 makes a sun-synchronous orbit precess ≈ +0.986°/day', () => {
-  const sim = new Simulation({ startDate: START, physics: { drag: false, j2: true, moonGravity: false } });
+  const sim = new Simulation({ startDate: START, physics: { drag: false, j2: true, moonGravity: false, sunGravity: false } });
   const sat = sim.addSatellite(stateFromElements({ a: R_EARTH + 786, e: 0, i: 98.6 * DEG, raan: 0.3 }, MU_EARTH));
   const node = () => {
     const W = elementsFromState(sat.pos, sat.vel, MU_EARTH).W; // world frame, +Y north
@@ -62,7 +62,7 @@ test('J2 makes a sun-synchronous orbit precess ≈ +0.986°/day', () => {
 });
 
 test('atmospheric drag lowers a LEO orbit', () => {
-  const sim = new Simulation({ startDate: START, physics: { drag: true, j2: false, moonGravity: false } });
+  const sim = new Simulation({ startDate: START, physics: { drag: true, j2: false, moonGravity: false, sunGravity: false } });
   const sat = sim.addSatellite({ ...stateFromElements({ a: R_EARTH + 300, e: 0, i: 0.5 }, MU_EARTH), ballistic: 0.02 });
   const a0 = elementsFromState(sat.pos, sat.vel, MU_EARTH).a;
   run(sim, 86400, 120);
@@ -97,7 +97,7 @@ test('geostationary satellite stays over the same longitude for a day', () => {
 });
 
 test('escape preset is unbound and is eventually removed as escaped', () => {
-  const sim = new Simulation({ startDate: START, physics: { moonGravity: false } });
+  const sim = new Simulation({ startDate: START, physics: { moonGravity: false, sunGravity: false } });
   const sat = sim.addSatellite(preset('escape', sim)[0]);
   assert.equal(sat.status, 'escaping');
   const events = run(sim, 40 * 86400, 3600);
@@ -198,7 +198,7 @@ test('conic sampling closes ellipses and cuts hyperbolas', () => {
 });
 
 test('finite prograde burn raises the orbit and burns propellant at F/(Isp·g0)', () => {
-  const sim = new Simulation({ startDate: START, physics: { drag: false, j2: false, moonGravity: false } });
+  const sim = new Simulation({ startDate: START, physics: { drag: false, j2: false, moonGravity: false, sunGravity: false } });
   const sat = sim.addSatellite(customLaunch({ altitudeKm: 400, speedFactor: 1, inclinationDeg: 30 }));
   const apo0 = sim.telemetry(sat.id).apoapsisKm;
   sim.setThrust(sat.id, ['prograde']);
@@ -240,7 +240,7 @@ test('auto-circularize turns GTO into a circular orbit at the current radius', (
 });
 
 test('Hohmann autopilot: 400 km → 850 km with the second burn at apoapsis', () => {
-  const sim = new Simulation({ startDate: START, physics: { drag: false, j2: false, moonGravity: false } });
+  const sim = new Simulation({ startDate: START, physics: { drag: false, j2: false, moonGravity: false, sunGravity: false } });
   const sat = sim.addSatellite(customLaunch({ altitudeKm: 400, inclinationDeg: 51.6 }));
   const dv1 = sim.hohmann(sat.id, 850);
   assert.ok(sat.autopilot && Math.abs(sim.telemetry(sat.id).apoapsisKm - 850) < 1);

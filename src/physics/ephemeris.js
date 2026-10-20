@@ -1,7 +1,7 @@
 // Low-precision ephemerides (Astronomical Almanac / Meeus style, ~0.01° for the
 // Sun and ~0.3° for the Moon) so the simulation starts with the real sky.
 
-import { DEG, J2000_MS, R_EARTH_EQ } from './constants.js';
+import { AU, DEG, J2000_MS, R_EARTH_EQ } from './constants.js';
 import { eqToWorld } from './vec.js';
 
 const daysSinceJ2000 = (ms) => (ms - J2000_MS) / 86400000;
@@ -14,13 +14,21 @@ export function gmst(ms) {
   return (((deg % 360) + 360) % 360) * DEG;
 }
 
-/** Unit vector from the Earth toward the Sun, in the Y-up world frame. */
-export function sunDirection(ms) {
+/** Geocentric Sun position (km) in the Y-up world frame (Astronomical Almanac low-precision formulae). */
+export function sunPosition(ms) {
   const d = daysSinceJ2000(ms);
   const g = (357.528 + 0.9856003 * d) * DEG;
   const lambda = (280.460 + 0.9856474 * d) * DEG + (1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g)) * DEG;
+  const r = (1.00014 - 0.01671 * Math.cos(g) - 0.00014 * Math.cos(2 * g)) * AU;
   const eps = obliquity(d);
-  return eqToWorld([Math.cos(lambda), Math.cos(eps) * Math.sin(lambda), Math.sin(eps) * Math.sin(lambda)]);
+  return eqToWorld([r * Math.cos(lambda), r * Math.cos(eps) * Math.sin(lambda), r * Math.sin(eps) * Math.sin(lambda)]);
+}
+
+/** Unit vector from the Earth toward the Sun, in the Y-up world frame. */
+export function sunDirection(ms) {
+  const p = sunPosition(ms);
+  const l = Math.hypot(p[0], p[1], p[2]);
+  return [p[0] / l, p[1] / l, p[2] / l];
 }
 
 /** Geocentric Moon position (km) in the Y-up world frame. */

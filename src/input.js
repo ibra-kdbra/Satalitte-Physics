@@ -162,7 +162,8 @@ export class Input {
     // Same mapping as the ORBITAL-OS prototype: W/S prograde/retrograde, A/D normal/anti-normal, Q/E radial out/in.
     const thrust = { KeyW: 'prograde', KeyS: 'retrograde', KeyA: 'normal', KeyD: 'antinormal', KeyQ: 'radialOut', KeyE: 'radialIn' }[e.code];
     if (thrust) {
-      if (down) this.held.add(thrust); else this.held.delete(thrust);
+      // Auto-repeat must not re-arm a key cleared by a selection change: re-press to fire.
+      if (down && !e.repeat) this.held.add(thrust); else if (!down) this.held.delete(thrust);
       e.preventDefault();
       return;
     }

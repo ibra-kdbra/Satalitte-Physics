@@ -128,10 +128,9 @@ export const PRESETS = [
     id: 'lunarOrbit', group: 'Special', name: 'Lunar orbiter',
     description: '100 km polar orbit around the Moon (Earth tides perturb it).',
     create: (sim) => {
-      const m = sim.moonOrbit.el;
       const r = R_MOON + 100;
       const toEarth = normalize(vec(), scale(vec(), sim.moonPos, -1));
-      const n = m.W; // Moon orbit normal: a polar lunar orbit contains it
+      const n = sim.moonElements().W; // Moon orbit normal: a polar lunar orbit contains it
       const e2 = normalize(vec(), cross(vec(), n, toEarth));
       const vRel = Math.sqrt(MU_MOON / r);
       const pos = add(vec(), sim.moonPos, scale(vec(), e2, r));
@@ -144,11 +143,11 @@ export const PRESETS = [
 /** Hohmann-style transfer from a 200 km parking orbit, aimed at the Moon's future position. */
 export function lunarTransfer(sim, { parkingAltKm = 200, missKm = 0 } = {}) {
   const rp = R_EARTH + parkingAltKm;
-  const W = sim.moonOrbit.el.W;
+  const W = sim.moonElements().W;
   const future = vec();
   let tof = 5 * 86400;
   for (let k = 0; k < 4; k++) {
-    sim.moonOrbit.at(sim.time + tof, future);
+    sim.moonAt(sim.time + tof, future);
     const a = (rp + len(future) - missKm) / 2;
     tof = Math.PI * Math.sqrt((a * a * a) / MU_EARTH);
   }
