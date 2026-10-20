@@ -73,3 +73,26 @@ test('real-satellite telemetry: SGP4 state through the simulation telemetry shap
   assert.ok(Math.abs(tel.inclinationDeg - 34.27) < 0.1 && Math.abs(tel.eccentricity - 0.186) < 0.005);
   assert.ok(Number.isNaN(tel.fuelKg) && tel.altitudeKm > 600);
 });
+
+test('a cloned real satellite flies the same path in the simulation as SGP4 predicts (frames agree)', async () => {
+  const { Simulation } = await import('../src/physics/simulation.js');
+  // ISS-like element set (circular, 51.6°, ~415 km).
+  const rec = satrecFromOmm({
+    OBJECT_NAME: 'ISS-LIKE', OBJECT_ID: '1998-067A', NORAD_CAT_ID: 99999, EPOCH: '2026-10-20T12:00:00.000000',
+    MEAN_MOTION: 15.50, ECCENTRICITY: 0.0005, INCLINATION: 51.64, RA_OF_ASC_NODE: 120, ARG_OF_PERICENTER: 90,
+    MEAN_ANOMALY: 0, EPHEMERIS_TYPE: 0, CLASSIFICATION_TYPE: 'U', ELEMENT_SET_NO: 999, REV_AT_EPOCH: 1,
+    BSTAR: 0, MEAN_MOTION_DOT: 0, MEAN_MOTION_DDOT: 0,
+  });
+  const t0 = epochMs(rec);
+  const pos = [0, 0, 0], vel = [0, 0, 0];
+  propagateWorld(rec, t0, pos, vel);
+  const sim = new Simulation({ startDate: new Date(t0), physics: { drag: false, moonGravity: false, sunGravity: false } });
+  const sat = sim.addSatellite({ pos, vel });
+  const period = 86400 / 15.5;
+  for (let t = 0; t < period; t += 30) sim.step(0.1, 300);
+  propagateWorld(rec, t0 + sim.time * 1000, pos, vel);
+  const err = Math.hypot(sat.pos[0] - pos[0], sat.pos[1] - pos[1], sat.pos[2] - pos[2]);
+  // Same physics to first order (two-body + J2), so the paths must agree closely.
+  // Measured 0.13 km; a frame or axis mistake would be hundreds of km.
+  assert.ok(err < 2, `difference after one orbit ${err.toFixed(2)} km`);
+});
