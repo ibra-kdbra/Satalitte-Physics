@@ -12,6 +12,7 @@
 //   node tests/perf/bench.mjs --gpu              # + relative GPU cost per feature
 //   node tests/perf/bench.mjs --alloc            # + JS heap allocation / GC per frame
 //   node tests/perf/bench.mjs --json out.json    # also write the raw results
+//   node tests/perf/bench.mjs --net              # emulate a 150 ms / 12 Mbit/s network
 //
 // Options: --root <dir> serve another checkout (A/B comparisons), --frames <n>
 // frames sampled per scenario (default 90), --seconds <s> sampling time limit
@@ -57,6 +58,8 @@ const EXTRA_QUERY = opt('query', '') ? String(opt('query')) : '';
 const DO_GPU = !!opt('gpu', false);
 const DO_ALLOC = !!opt('alloc', false);
 const JSON_OUT = opt('json', '');
+// --net: emulate a mobile network (150 ms RTT, 12 Mbit/s down) to expose the loading waterfall.
+const NET = !!opt('net', false);
 const BASE = '/Satalitte-Physics/';
 const GL_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
 
@@ -120,6 +123,10 @@ const SCENARIOS = [
   },
   { id: 'phone', name: "Phone 390×844 @3x, 'low'", query: '&quality=low', ctx: PHONE },
   {
+    // Adaptive resolution forced on (it is off by default on software GL): let it settle, then sample.
+    id: 'adaptive', name: 'Default scene, adaptive resolution', query: '&adaptive=1', ctx: DESKTOP, settleMs: 25000,
+  },
+  {
     id: 'paused', name: 'Default scene, paused and still', query: '', ctx: DESKTOP,
     keys: async (page) => {
       await page.evaluate(() => document.activeElement?.blur?.());
@@ -180,6 +187,11 @@ async function runScenario(browser, sc) {
   const errors = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(e.message));
+  if (NET) {
+    const net = await ctx.newCDPSession(page);
+    await net.send('Network.enable');
+    await net.send('Network.emulateNetworkConditions', { offline: false, latency: 150, downloadThroughput: 1.5e6, uploadThroughput: 0.75e6 });
+  }
   served = [];
   const t0 = performance.now();
   await page.goto(`${ORIGIN}${BASE}index.html?perf=1${sc.query}${EXTRA_QUERY}`);
@@ -193,6 +205,7 @@ async function runScenario(browser, sc) {
   await page.waitForFunction(() => window.__satalitte.rig && window.__satalitte.rig.fly == null, null, { timeout: 120000, polling: 250 });
   if (sc.setup) await page.evaluate(sc.setup, sc.arg);
   if (sc.keys) await sc.keys(page);
+  if (sc.settleMs) await page.waitForTimeout(sc.settleMs);
   await page.evaluate(() => new Promise((r) => setTimeout(r, 1500)));
   const longTasks = await page.evaluate(() => window.__bench.longTasks);
   const bootLong = longTasks.filter((t) => t.start <= ttff + 3000);

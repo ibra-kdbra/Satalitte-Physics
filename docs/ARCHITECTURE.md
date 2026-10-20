@@ -81,8 +81,21 @@ export function createRenderer(container, { quality }) → {
   setBloom(enabled),
   setQuality('low'|'medium'|'high'),// pixel ratio + bloom resolution
   render(),                         // composer (or plain) render + label render
+  renderScene(), renderLabels(),    // the two halves of render() (the loop skips renderScene when idle)
+  setResolutionScale(s), getResolutionScale(), // adaptive resolution: s × the quality's pixel ratio
+  compile(),                        // async shader pre-compilation (KHR_parallel_shader_compile only)
+  softwareGL,                       // true on CPU rasterisers
 }
 ```
+Frame loop budget rules (src/main.js): nothing is allocated per craft per frame;
+orbit lines are resampled round-robin (≤ 8 per frame, selected craft first) and
+only when the craft's state changed; while paused and still the GL scene is
+redrawn only on change (input, HUD action, camera, settings, catalogue) or at
+1 Hz; the loop stops while the tab is hidden. `src/render/adaptive.js` scales
+the pixel ratio from the GPU-bound part of the frame time. Labels use
+`LabelRenderer` (src/render/labels.js), a CSS2DRenderer that writes the DOM
+only on change. Real-satellite snapshots are uploaded once and extrapolated on
+the GPU (src/render/catalogPoints.js).
 `quality`: high → pixelRatio ≤ 2, bloom on; medium → ≤ 1.5; low → 1, bloom off by default.
 Tone mapping ACES Filmic, output sRGB. Bloom must be subtle (threshold high) so
 only the sun, atmosphere rim, re-entry plasma and impact flashes glow.

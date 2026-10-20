@@ -52,6 +52,8 @@ Newton's cannon, escape, a lunar transfer and a lunar orbiter.
 | `?empty` | Start with only the Earth and the Moon |
 | `?warp=3600` | Initial time warp (1, 10, 60, 300, 1800, 3600, 21600, 86400) |
 | `?quality=low` | Force graphics quality (low / medium / high) |
+| `?perf=1` | Performance overlay: frame time, CPU time per stage, draw calls, triangles, GPU memory |
+| `?adaptive=0` / `?adaptive=1` | Adaptive resolution off / on (default: on with a GPU, off on software rendering) |
 
 ## Project layout
 
@@ -80,6 +82,7 @@ python3 -m http.server 8080      # or: npm run serve → http://localhost:8080
 npm test                         # physics regression tests (node --test)
 npm install && npm run vendor    # only when upgrading three.js / lil-gui
 node tests/smoke/shot.mjs index.html shot.png 8000   # headless render check (needs Playwright)
+npm run bench                    # performance benchmark: CPU per stage, draw calls, bytes, start-up (needs Playwright)
 ```
 
 ### Deployment
