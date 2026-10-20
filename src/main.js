@@ -983,7 +983,9 @@ function updateSelectionOverlays() {
 function updateCatalog() {
   if (!catalog) return;
   const rate = paused ? 0 : WARP_STEPS[warpIndex];
-  catalog.update(sim.dateMs, rate);
+  // A selected real satellite keeps its point within ~1 m of its model; otherwise 4 s of
+  // extrapolation (< 100 m in LEO, under a pixel unless the camera is within ~100 km).
+  catalog.update(sim.dateMs, rate, real.id ? 500 : 4000);
   // Uploads the snapshot only when a new one arrived; the motion in between
   // is extrapolated on the GPU (one uniform per frame).
   catalogPoints.sync(catalog.snapshot, sim.dateMs, UNIT);
@@ -1105,18 +1107,21 @@ function saveCatalogGroups() {
 
 // ------------------------------------------------------------------ HUD sync
 
-let lastBodiesKey = '';
+let lastBodies = null; // [id, status, …] of the list last sent to the HUD
 function refreshBodies(force = false) {
-  const bodies = [
+  // Compare in place (runs at 10 Hz): the list is only rebuilt when it changed.
+  const sats = sim.satellites;
+  let same = !force && lastBodies !== null && lastBodies.length === sats.length * 2;
+  for (let i = 0; same && i < sats.length; i++) {
+    if (lastBodies[2 * i] !== sats[i].id || lastBodies[2 * i + 1] !== sats[i].status) same = false;
+  }
+  if (same) return;
+  lastBodies = sats.flatMap((s) => [s.id, s.status]);
+  hud.setBodies?.([
     { id: 'earth', name: 'Earth', kind: 'planet', color: '#4c8dff', status: 'orbiting' },
     { id: 'moon', name: 'Moon', kind: 'moon', color: '#c9c9c9', status: 'orbiting' },
-    ...sim.satellites.map((s) => ({ id: s.id, name: s.name, kind: s.kind, color: s.color, status: s.status })),
-  ];
-  const key = bodies.map((b) => `${b.id}:${b.status}`).join('|');
-  if (force || key !== lastBodiesKey) {
-    lastBodiesKey = key;
-    hud.setBodies?.(bodies);
-  }
+    ...sats.map((x) => ({ id: x.id, name: x.name, kind: x.kind, color: x.color, status: x.status })),
+  ]);
 }
 
 function updateHud(force = false) {

@@ -21,7 +21,7 @@ const SLOW_MS = 22;           // median GPU-bound interval above this → step d
 const FAST_MS = 17.5;         // below this for UP_PATIENCE windows → step up (≥ ~57 fps)
 const DOWN_PATIENCE = 2;      // consecutive slow windows before stepping down
 const UP_PATIENCE = 4;        // consecutive fast windows before stepping up
-const RETRY_MS = 30000;       // a level that was too slow is not retried for this long
+const RETRY_MS = 60000;       // a level that was too slow is not retried for this long
 const VERY_SLOW_MS = 50;      // median above this (< 20 fps): step down at once, two levels
 
 export class AdaptiveResolution {
@@ -65,7 +65,7 @@ export class AdaptiveResolution {
     if (!drawn || !(prev === prev)) return; // only consecutive drawn frames measure the GPU
     if (this.skip > 0) { this.skip--; return; }
     const interval = now - prev;
-    if (interval > 250) return;            // a hitch (tab switch, shader compile): not a trend
+    if (interval > 1500) return;           // a hitch (tab switch, shader compile): not a trend
     if (this.n === 0) this.windowStart = now;
     this.samples[this.n++] = Math.max(0, interval - cpuMs);
     if (this.n < WINDOW && !(this.n >= MIN_FRAMES && now - this.windowStart >= WINDOW_MS)) return;

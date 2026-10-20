@@ -256,6 +256,7 @@ async function runScenario(browser, sc) {
       appPerFrameKB: app / frames / 1024,
       nonPhysicsPerFrameKB: (app - physics) / frames / 1024,
       top: [...byFn.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${(v / frames / 1024).toFixed(1)} KB  ${k}`),
+      topApp: [...byFn.entries()].filter(([k]) => !k.includes('src/physics/')).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${(v / frames / 1024).toFixed(2)} KB  ${k}`),
       minorGC: gcEvents.filter((n) => /Minor|SCAVENGER/.test(n)).length,
       majorGC: gcEvents.filter((n) => /Major|MARK_COMPACTOR/.test(n)).length,
       seconds: wall,
@@ -440,7 +441,7 @@ if (DO_GPU) {
 }
 const errs = results.filter((r) => r.errors.length);
 if (errs.length) for (const r of errs) console.log(`\n${r.id}: console errors:\n  ${r.errors.join('\n  ')}`);
-if (DO_ALLOC) for (const r of results) console.log(`\n${r.id}: top allocation sites per frame\n  ${r.alloc.top.join('\n  ')}`);
+if (DO_ALLOC) for (const r of results) console.log(`\n${r.id}: top allocation sites per frame\n  ${r.alloc.top.join('\n  ')}\n  outside src/physics:\n  ${r.alloc.topApp.join('\n  ')}`);
 
 const bq = await bytesPerQuality();
 console.log('\nTexture + star bytes per quality (hardware GPU path; software GL skips the 4K upgrade):');

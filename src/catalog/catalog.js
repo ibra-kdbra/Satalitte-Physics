@@ -11,9 +11,9 @@
 // Cost control: the snapshot buffers ping-pong between the threads (each
 // request transfers the previous snapshot's arrays back for reuse, so no
 // 2 × 12 bytes × n allocation per snapshot); a new snapshot is only requested
-// once the current one is SNAPSHOT_REFRESH_MS of sim time old (the renderer
-// extrapolates in between: < 2 m of error for LEO), and while the simulation
-// is paused none is requested once the current one is exact.
+// once the current one is `refreshMs` of sim time old (the renderer
+// extrapolates in between: ½·a·t² ≈ 70 m in LEO after 4 s, 1 m after 0.5 s),
+// and while the simulation is paused none is requested once it is exact.
 
 import { epochMs, propagateWorld, satrecFromOmm } from './sgp4.js';
 
@@ -28,8 +28,6 @@ const FALLBACK_GROUPS = [
 // Linear motion along the velocity is only trusted over short gaps (a LEO
 // satellite turns ~4° per minute); beyond this the last snapshot is held.
 const MAX_EXTRAPOLATION_S = 60;
-// Sim time a snapshot is used for before a fresh one is requested (½·a·t² ≈ 1 m in LEO).
-const SNAPSHOT_REFRESH_MS = 500;
 
 export class Catalog {
   /**
@@ -172,9 +170,10 @@ export class Catalog {
 
   /**
    * Ask for a fresh snapshot (call every frame; cheap when one is in flight).
-   * `rate` is sim seconds per wall second (0 when paused).
+   * `rate` is sim seconds per wall second (0 when paused); `refreshMs` is the
+   * sim time a snapshot is extrapolated before a new one is requested.
    */
-  update(ms, rate = 1) {
+  update(ms, rate = 1, refreshMs = 500) {
     if (!this.objects.length) return;
     if (this.worker) {
       if (this.busy) return;
@@ -182,7 +181,7 @@ export class Catalog {
         // Paused: the snapshot taken at exactly this time is still exact.
         if (rate === 0 && this.snapshot.ms === ms) return;
         // Running: a recent snapshot is extrapolated by the renderer.
-        if (rate !== 0 && Math.abs(ms - this.snapshot.ms) < SNAPSHOT_REFRESH_MS) return;
+        if (rate !== 0 && Math.abs(ms - this.snapshot.ms) < refreshMs) return;
       }
       this.busy = true;
       this._dirty = false;

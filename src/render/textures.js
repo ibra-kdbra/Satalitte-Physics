@@ -6,7 +6,7 @@
 //   medium ≈ 5.0 MB  (2.45 MB to first frame, then Earth day + clouds at 4K)
 //   high   ≈ 6.7 MB  (2.45 MB to first frame, then all four Earth maps at 4K)
 import {
-  LoadingManager, FileLoader, DataTexture, Texture, RGBAFormat, SRGBColorSpace, NoColorSpace,
+  LoadingManager, TextureLoader, FileLoader, DataTexture, RGBAFormat, SRGBColorSpace, NoColorSpace,
   LinearMipmapLinearFilter, LinearFilter, RepeatWrapping, ClampToEdgeWrapping,
 } from 'three';
 import { isSoftwareRenderer } from './renderer.js';
@@ -22,51 +22,6 @@ function manifest(quality) {
     moon: [moon, SRGBColorSpace, [150, 150, 150, 255], 'Moon', []],
     milkyWay: ['milkyway_1024.jpg', SRGBColorSpace, [0, 0, 0, 255], 'Milky Way', []],
   };
-}
-
-// Images are fetched (so index.html's <link rel=preload as=fetch> is reused)
-// and decoded off the main thread by createImageBitmap, so the first upload
-// does not decode synchronously (a 2K JPEG costs tens of ms on the main
-// thread, a 4K one over 100 ms on a phone: a visible hitch at the 4K swap).
-// Without createImageBitmap options (Safari < 17, Firefox < 98) an <img> made
-// from the same blob is decoded with img.decode() instead.
-const BITMAP_OK = (() => {
-  if (typeof createImageBitmap !== 'function' || typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent;
-  const safari = /^((?!chrome|android).)*safari/i.test(ua) ? Number((ua.match(/Version\/(\d+)/) || [])[1] || 0) : -1;
-  const firefox = /Firefox\/(\d+)/.exec(ua);
-  return !(safari >= 0 && safari < 17) && !(firefox && Number(firefox[1]) < 98);
-})();
-
-function loadImageTexture(url, colorSpace, manager) {
-  manager?.itemStart(url);
-  return fetch(url, { credentials: 'same-origin' })
-    .then((res) => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.blob(); })
-    .then(async (blob) => {
-      let tex;
-      if (BITMAP_OK) {
-        const bitmap = await createImageBitmap(blob, {
-          imageOrientation: 'flipY', // UNPACK_FLIP_Y does not apply to bitmaps
-          premultiplyAlpha: 'none',
-          colorSpaceConversion: colorSpace === NoColorSpace ? 'none' : 'default', // as three's unpack setting
-        });
-        tex = new Texture(bitmap);
-        tex.flipY = false;
-      } else {
-        const img = new Image();
-        const src = URL.createObjectURL(blob);
-        img.src = src;
-        try { await img.decode(); } finally { URL.revokeObjectURL(src); }
-        tex = new Texture(img);
-      }
-      tex.needsUpdate = true;
-      manager?.itemEnd(url);
-      return tex;
-    })
-    .catch((err) => {
-      if (manager) { manager.itemError(url); manager.itemEnd(url); }
-      throw err;
-    });
 }
 
 function fallbackTexture(rgba, colorSpace) {
@@ -99,6 +54,7 @@ export function loadTextures(renderer, { quality = 'high', onProgress, basePath 
     if (onProgress) onProgress(total ? loaded / total : 1, labels[url] || 'Textures');
   };
   manager.onError = () => {}; // handled per item below
+  const loader = new TextureLoader(manager);
 
   const setup = (tex, key) => {
     tex.colorSpace = files[key][1];
@@ -112,16 +68,16 @@ export function loadTextures(renderer, { quality = 'high', onProgress, basePath 
     return tex;
   };
 
-  const loadOne = (key, res, mgr) => {
+  const loadOne = (key, res, mgrLoader) => new Promise((resolve) => {
     const [file, colorSpace, fallback] = files[key];
     const url = basePath + file.replace('{res}', String(res));
-    return loadImageTexture(url, colorSpace, mgr).then((tex) => setup(tex, key), () => {
+    mgrLoader.load(url, (tex) => resolve(setup(tex, key)), undefined, () => {
       console.warn(`[textures] failed to load ${url}, using fallback`);
-      return res === 2048 ? fallbackTexture(fallback, colorSpace) : null;
+      resolve(res === 2048 ? fallbackTexture(fallback, colorSpace) : null);
     });
-  };
+  });
 
-  const jobs = keys.map((key) => loadOne(key, 2048, manager).then((t) => [key, t]));
+  const jobs = keys.map((key) => loadOne(key, 2048, loader).then((t) => [key, t]));
   jobs.push(new Promise((resolve) => {
     new FileLoader(manager).setResponseType('arraybuffer').load(starsUrl, (buf) => resolve(['stars', buf]), undefined, () => {
       console.warn('[textures] failed to load the star catalogue');
@@ -145,14 +101,14 @@ export function loadTextures(renderer, { quality = 'high', onProgress, basePath 
     const upgrades = softwareGL ? [] : keys.filter((k) => files[k][4].includes(quality) && !textures[k].userData.fallback);
     if (upgrades.length) {
       setTimeout(() => {
+        const plain = new TextureLoader();
         for (const key of upgrades) {
-          loadOne(key, 4096, null).then((tex) => {
+          loadOne(key, 4096, plain).then((tex) => {
             if (!tex) return;
             const old = textures[key];
             textures[key] = tex;
             for (const fn of watchers[key] || []) fn(tex);
             old.dispose();
-            old.image?.close?.(); // ImageBitmap memory, not only the GPU copy
           });
         }
       }, upgradeDelayMs);
