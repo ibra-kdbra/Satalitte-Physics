@@ -23,7 +23,7 @@ Processing:
 
 | shipped file | source | licence / attribution |
 |---|---|---|
-| `assets/textures/moon_{2048,1024}.jpg` | carried over from the 2021 version of this project (`legacy/images/moon_texture.jpg`, 2000×1000 greyscale) | The original source was not recorded in the repository. It is a NASA/USGS-derived lunar albedo map; the source and licence are **to be confirmed**. Processing: resampled to 2048×1024, light unsharp mask, plus a 1024×512 copy for phones. |
+| `assets/textures/moon_{2048,1024}.jpg` | the Moon map of this project's original 2021 version (`legacy/images/moon_texture.jpg` in this repository, same owner), 2000×1000 greyscale | The source of the imagery was not recorded at the time. Processing: resampled to 2048×1024, light unsharp mask, plus a 1024×512 copy for phones. |
 
 ## Sky
 

@@ -45,6 +45,7 @@ uniform vec3 center;
 uniform float sunE;
 uniform float atmoGain;
 uniform float atmosphereOn;
+uniform float hazeNadir;
 ${ATMOSPHERE_GLSL}
 #ifdef AP_VERTEX
 varying vec3 vApIn;   // in-scattered light, computed per vertex
@@ -54,6 +55,47 @@ varying vec3 vSunT;   // sunlight transmittance at the vertex
 #ifdef SHADOW_VERTEX
 varying vec2 vShadowUv; // cloud-shadow lookup offset from vUv
 #endif
+// "Haze filter": physically, the Rayleigh path radiance looking straight down
+// is as bright as a desert's blue reflectance, which turns land magenta (raw
+// satellite data look like that; photos from orbit are haze-corrected). Keep
+// ~40 % of it near nadir and all of it towards the limb, where it makes the rim.
+float hazeFactor(vec3 camRel, vec3 rd, float dist) {
+  vec3 n = normalize(camRel + rd * dist);
+  float airmass = 1.0 / max(-dot(n, rd), 0.03);
+  return mix(hazeNadir, 1.0, smoothstep(1.5, 8.0, airmass));
+}
+// Close-range detail: 3D value noise on the body-fixed unit sphere, used only
+// within ~3500 km of the camera (where the 4K maps' 10 km texels smear).
+float dHash(vec3 p) {
+  p = fract(p * 0.3183099 + 0.1);
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+float dNoise(vec3 x) {
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(dHash(i), dHash(i + vec3(1, 0, 0)), f.x), mix(dHash(i + vec3(0, 1, 0)), dHash(i + vec3(1, 1, 0)), f.x), f.y),
+             mix(mix(dHash(i + vec3(0, 0, 1)), dHash(i + vec3(1, 0, 1)), f.x), mix(dHash(i + vec3(0, 1, 1)), dHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+float nearDetail(float dist) { return 1.0 - smoothstep(1.0, 3.5, dist); }
+// Three octaves of feature size L km, each faded out once a pixel (≈ dist ×
+// 0.9 mrad at 45° fov) gets within ~3 px of it, so the detail never sparkles.
+float detailNoise(vec3 unitPos, float Lkm, float dist) {
+  float px = dist * 1000.0 * 0.0009;
+  float sum = 0.0;
+  float wsum = 0.0;
+  float L = Lkm;
+  float amp = 1.0;
+  for (int i = 0; i < 3; i++) {
+    float w = amp * smoothstep(2.0 * px, 4.0 * px, L);
+    sum += (dNoise(unitPos * (6371.0 / L)) - 0.5) * w;
+    wsum += amp;
+    L *= 0.35;
+    amp *= 0.5;
+  }
+  return sum / wsum; // ≈ −0.5..0.5, 0 where every octave is too small
+}
 // Aerial perspective between the camera and a point at distance dist along rd.
 vec3 aerial(vec3 color, vec3 camRel, vec3 rd, float dist) {
   if (atmosphereOn < 0.5) return color;
@@ -63,7 +105,7 @@ vec3 aerial(vec3 color, vec3 camRel, vec3 rd, float dist) {
   vec2 hit = aRaySphere(camRel, rd, A_TR);
   vec3 Tv;
   vec3 ins = aScatter(camRel, rd, max(hit.x, 0.0), dist, sunDir, Tv);
-  return color * Tv + ins * (sunE * atmoGain);
+  return color * Tv + ins * (sunE * atmoGain * hazeFactor(camRel, rd, dist));
 #endif
 }
 `;
@@ -80,6 +122,7 @@ varying vec2 vUv;
 varying vec3 vN;
 varying vec3 vT;
 varying vec3 vWorldPos;
+varying vec3 vObjN;
 ${COMMON_FRAG}
 #ifdef SHADOW_VERTEX
 uniform mat3 earthInv;
@@ -94,6 +137,7 @@ void main() {
   vT = normalize(mat3(modelMatrix) * t);
   vec4 wp = modelMatrix * vec4(position, 1.0);
   vWorldPos = wp.xyz;
+  vObjN = normal;
   gl_Position = projectionMatrix * viewMatrix * wp;
 #ifdef AP_VERTEX
   vec3 Pn = normalize(wp.xyz - center);
@@ -112,7 +156,7 @@ void main() {
     float dist = length(toCam);
     vec3 rd = -toCam / dist;
     vec2 hit = aRaySphere(camRel, rd, A_TR);
-    vApIn = aScatter(camRel, rd, max(hit.x, 0.0), dist, sunDir, vApT) * (sunE * atmoGain);
+    vApIn = aScatter(camRel, rd, max(hit.x, 0.0), dist, sunDir, vApT) * (sunE * atmoGain * hazeFactor(camRel, rd, dist));
   }
 #endif
   #include <logdepthbuf_vertex>
@@ -134,6 +178,7 @@ varying vec2 vUv;
 varying vec3 vN;
 varying vec3 vT;
 varying vec3 vWorldPos;
+varying vec3 vObjN;
 ${COMMON_FRAG}
 void main() {
   #include <logdepthbuf_fragment>
@@ -178,7 +223,31 @@ void main() {
   float cover = smoothstep(0.15, 0.85, cs);
   float shadow = 1.0 - 0.75 * cover;
 
-  vec3 albedo = texture2D(dayMap, vUv).rgb;
+  // Blue Marble is a contrast-stretched display image: decoded as plain sRGB its
+  // "reflectance" is ~2× too dark and over-saturated (desert red 0.22 / blue
+  // 0.04 vs ~0.35 / 0.15 measured), and the physically sized haze then turns
+  // land magenta. Re-expanding with γ ≈ 1.5 instead of 2.2 restores plausible
+  // surface reflectances (oceans stay dark: 0.02–0.06).
+  vec3 albedo = pow(texture2D(dayMap, vUv).rgb, vec3(0.68));
+
+#ifndef AP_VERTEX
+  // Close range: a few km of procedural albedo and relief variation on land.
+  float nearL = nearDetail(dist) * (1.0 - water);
+  float dn = 0.0;
+  if (nearL > 0.001) dn = detailNoise(normalize(vObjN), 6.0, dist);
+  float detail = dn * nearL;
+  albedo *= 1.0 + detail * 0.4;
+  // bump from screen-space derivatives of the detail height (uniform control flow)
+  vec3 dpx = dFdx(vWorldPos);
+  vec3 dpy = dFdy(vWorldPos);
+  float hgt = detail * 0.0006;               // ±0.3 km
+  float dhx = dFdx(hgt);
+  float dhy = dFdy(hgt);
+  vec3 r1 = cross(dpy, N);
+  vec3 r2 = cross(N, dpx);
+  float det = dot(dpx, r1);
+  if (abs(det) > 1e-14) Nb = normalize(abs(det) * Nb - sign(det) * (dhx * r1 + dhy * r2));
+#endif
   float ndl = max(dot(Nb, L), 0.0);
   vec3 color = albedo * RECIPROCAL_PI * E * ndl * shadow;
   // Skylight (stands in for multiple scattering): bluish, fades through twilight
@@ -225,10 +294,21 @@ varying vec2 vUv;
 varying vec3 vN;
 varying vec3 vT;
 varying vec3 vWorldPos;
+varying vec3 vObjN;
 ${COMMON_FRAG}
 void main() {
   #include <logdepthbuf_fragment>
   float c = texture2D(cloudMap, vUv).r;
+#ifndef AP_VERTEX
+  // Close range: billow and erode cloud edges with km-scale noise; cores stay.
+  float camDist = length(cameraPosition - vWorldPos);
+  float nearC = nearDetail(camDist);
+  if (nearC > 0.001) {
+    float n = detailNoise(normalize(vObjN), 14.0, camDist);
+    // edges only (c·(1−c) peaks at the fringe), gentle: large structure stays
+    c = clamp(c + n * 0.35 * (4.0 * c * (1.0 - c)) * nearC, 0.0, 1.0);
+  }
+#endif
   float a = smoothstep(0.12, 0.9, c);
   if (a < 0.004) discard;
   vec3 N = normalize(vN);
@@ -380,6 +460,7 @@ export function createEarth(textures, { quality = 'high' } = {}) {
     sunE: { value: ATMOSPHERE.sunIrradiance },
     atmoGain: { value: 1.05 }, // compensates the missing multiple scattering
     atmosphereOn: { value: 1 },
+    hazeNadir: { value: 0.4 },
   };
 
   const surfaceMat = new ShaderMaterial({

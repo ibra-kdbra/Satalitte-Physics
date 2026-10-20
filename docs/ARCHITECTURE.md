@@ -28,8 +28,8 @@ Import map (in `index.html`):
 } }
 ```
 Available addons: `controls/OrbitControls.js`, `renderers/CSS2DRenderer.js`,
-`postprocessing/{EffectComposer,RenderPass,UnrealBloomPass,OutputPass,ShaderPass}.js`,
-`objects/Lensflare.js`. Do not import other addons (they are not vendored).
+`postprocessing/{EffectComposer,RenderPass,UnrealBloomPass,OutputPass,ShaderPass}.js`.
+Do not import other addons (they are not vendored).
 
 ## Frames & units
 
@@ -49,18 +49,21 @@ Available addons: `controls/OrbitControls.js`, `renderers/CSS2DRenderer.js`,
   in the vertex shader and `<logdepthbuf_pars_fragment>` / `<logdepthbuf_fragment>`
   in the fragment shader.
 
-## Textures (`assets/textures/`)
+## Textures (`assets/textures/`) and sky data
 
-| file | size | notes |
+Rebuilt from the original downloads by `scripts/build-textures.py`; sources and
+licences in `docs/CREDITS.md`. 2K maps load first; on 'high'/'medium' the 4K
+maps replace them shortly after start-up (not on 'low').
+
+| file | content | notes |
 |---|---|---|
-| earth_day_4096.jpg / earth_day_2048.jpg | RGB | day albedo (sRGB) |
-| earth_normal_2048.jpg | RGB | tangent-space normal map |
-| earth_specular_2048.jpg | RGB | ocean mask (white = water) |
-| earth_lights_2048.jpg | RGB | night city lights (sRGB) |
-| earth_clouds_2048.jpg | L | cloud coverage, use as alpha |
-| moon_2048.jpg | L | moon albedo |
-| starfield_4096.jpg | RGB | equirect Milky Way background |
-| lensflare0.png, lensflare3.png | RGB | sun flare sprites |
+| earth_day_{4096,2048}.jpg | RGB | day albedo (sRGB), Blue Marble, deep ocean flattened |
+| earth_relief_{4096,2048}.jpg | RGB data | R = elevation (bump), G = water mask (NoColorSpace) |
+| earth_clouds_{4096,2048}.jpg | L | cloud coverage, used as alpha |
+| earth_lights_{4096,2048}.jpg | L | Black Marble city light intensity (sRGB) |
+| moon_{2048,1024}.jpg | L | Moon albedo ('low' uses 1024) |
+| milkyway_1024.jpg | L | Milky Way brightness in RA/Dec (u = 0.5 − RA/360°) |
+| `assets/stars.bin` | binary | 25,723 Hipparcos stars ≤ mag 7.5: 'STAR', uint32 n, then per star int16 x,y,z (world frame ×32767), uint8 (mag+2)×25, uint8 r,g,b |
 
 ---
 
@@ -86,11 +89,14 @@ only the sun, atmosphere rim, re-entry plasma and impact flashes glow.
 
 ### `src/render/textures.js`
 ```js
-export function loadTextures(renderer, { quality, onProgress }) → Promise<Textures>
+export function loadTextures(renderer, { quality, onProgress, basePath?, software? }) → Promise<Textures>
+// Textures: { earthDay, earthRelief, earthClouds, earthLights, moon, milkyWay,
+//             stars: ArrayBuffer|null } plus non-enumerable watch(key, fn) for
+// the progressive 4K upgrade.
 // onProgress(fraction 0..1, label). Uses THREE.LoadingManager.
 // Correct colorSpace (SRGB for albedo/lights/stars, NoColorSpace for data maps),
 // anisotropy = renderer.capabilities.getMaxAnisotropy() (≤ 8), mipmaps on.
-// quality 'low' loads earth_day_2048, otherwise earth_day_4096.
+// All Earth maps start at 2048; 'medium'/'high' swap in the 4096 versions after start-up.
 // Must resolve even if a texture fails (use a 1×1 fallback and console.warn).
 ```
 
@@ -127,9 +133,12 @@ export function createMoon(textures) → {
 ### `src/render/sky.js`
 ```js
 export function createSky(textures, scene) → { update({ sunDir, camera }) }
-// starfield background (scene.background equirect or big inverted sphere that
-// follows the camera; must not z-fight or clip), DirectionalLight from sunDir,
-// faint ambient, a visible sun disc + Lensflare placed far along sunDir.
+// Real stars (stars.bin, point sprites at their RA/Dec, magnitude → size and
+// brightness, B−V → colour) and a faint Milky Way, both drawn first and centred
+// on the camera so they never clip or z-fight; star exposure drops when the
+// sunlit Earth or the Sun is in view. DirectionalLight from sunDir, faint
+// ambient. The Sun is a drawn, limb-darkened disc of its true angular size with
+// a restrained glare (HDR, picked up by bloom); there is no lens flare.
 ```
 
 ### `src/render/satellite.js`

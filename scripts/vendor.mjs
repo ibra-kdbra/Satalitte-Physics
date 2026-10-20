@@ -17,7 +17,6 @@ const ADDONS = [
   'postprocessing/RenderPass.js',
   'postprocessing/UnrealBloomPass.js',
   'postprocessing/OutputPass.js',
-  'objects/Lensflare.js',
 ];
 
 rmSync(out, { recursive: true, force: true });

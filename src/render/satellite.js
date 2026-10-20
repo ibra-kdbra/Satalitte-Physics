@@ -15,7 +15,7 @@
 // translated and uniformly scaled, so the halo/ring sprites stay screen-aligned.
 import {
   Group, Mesh, BoxGeometry, CylinderGeometry, LatheGeometry, IcosahedronGeometry, SphereGeometry,
-  MeshPhysicalMaterial, MeshStandardMaterial, MeshBasicMaterial, ShaderMaterial, PMREMGenerator, Scene, BackSide, Sprite, SpriteMaterial, DataTexture,
+  MeshPhysicalMaterial, MeshStandardMaterial, ShaderMaterial, PMREMGenerator, Scene, BackSide, Sprite, SpriteMaterial, DataTexture,
   RGBAFormat, SRGBColorSpace, NoColorSpace, LinearFilter, LinearMipmapLinearFilter, RepeatWrapping, Vector2,
   Vector3, Matrix4, Quaternion, Color, AdditiveBlending, DoubleSide,
 } from 'three';
@@ -93,30 +93,32 @@ function getShared() {
   let seed = 7;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
 
-  // Crinkled MLI foil: a height field of random creases (sum of sharp ridged
-  // noise at a few scales), turned into a tangent-space normal map.
+  // MLI foil: soft, large wrinkles (smooth value noise, stretched around the
+  // bus so highlights form streaks) plus a faint fine crinkle, as a tangent-
+  // space normal map. Kept gentle: real blankets read as broad sheen bands.
   const N = 128;
   const hgt = new Float32Array(N * N);
-  for (let oct = 0; oct < 3; oct++) {
-    const cells = 5 << oct;
-    const grid = new Float32Array((cells + 1) * (cells + 1)).map(() => rnd());
-    for (let i = 0; i <= cells; i++) grid[cells * (cells + 1) + i] = grid[i]; // tile
-    for (let j = 0; j <= cells; j++) grid[j * (cells + 1) + cells] = grid[j * (cells + 1)];
+  const octaves = [[3, 2, 1.0], [6, 4, 0.45], [24, 16, 0.06]]; // cells x, cells y, amplitude
+  for (const [cx, cy, amp] of octaves) {
+    const grid = new Float32Array((cx + 1) * (cy + 1)).map(() => rnd());
+    for (let i = 0; i <= cx; i++) grid[cy * (cx + 1) + i] = grid[i]; // tile vertically
+    for (let j = 0; j <= cy; j++) grid[j * (cx + 1) + cx] = grid[j * (cx + 1)]; // and horizontally
+    const sm = (t) => t * t * (3 - 2 * t);
     for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-      const gx = (x / N) * cells, gy = (y / N) * cells;
-      const ix = Math.floor(gx), iy = Math.floor(gy), fx = gx - ix, fy = gy - iy;
-      const g = (a, b) => grid[(iy + b) * (cells + 1) + ix + a];
+      const gx = (x / N) * cx, gy = (y / N) * cy;
+      const ix = Math.floor(gx), iy = Math.floor(gy), fx = sm(gx - ix), fy = sm(gy - iy);
+      const g = (a, b) => grid[(iy + b) * (cx + 1) + ix + a];
       const v = (g(0, 0) * (1 - fx) + g(1, 0) * fx) * (1 - fy) + (g(0, 1) * (1 - fx) + g(1, 1) * fx) * fy;
-      hgt[y * N + x] += (1 - Math.abs(v * 2 - 1)) / (1 << oct); // ridges = creases
+      hgt[y * N + x] += v * amp;
     }
   }
   const foilNormal = makeTexture(N, N, (x, y) => {
     const h = (xx, yy) => hgt[((yy + N) % N) * N + ((xx + N) % N)];
-    const dx = (h(x + 1, y) - h(x - 1, y)) * 2.5, dy = (h(x, y + 1) - h(x, y - 1)) * 2.5;
+    const dx = (h(x + 1, y) - h(x - 1, y)) * 6, dy = (h(x, y + 1) - h(x, y - 1)) * 6;
     const l = Math.hypot(dx, dy, 1);
     return [(-dx / l * 0.5 + 0.5) * 255, (-dy / l * 0.5 + 0.5) * 255, (1 / l * 0.5 + 0.5) * 255];
   }, false);
-  foilNormal.repeat.set(1, 1);
+  foilNormal.repeat.set(2, 1);
 
   // Solar array: 8×4 blocks of cells, each cell dark blue with chamfered
   // corners and a faint sheen, silver bus bars between cells.
@@ -151,16 +153,13 @@ function getShared() {
 
   const geos = {
     // gold-foil cylinder bus, axis along +Z (prograde)
-    bus: new CylinderGeometry(0.72, 0.72, 1.9, 10).rotateX(Math.PI / 2),
-    band: new CylinderGeometry(0.75, 0.75, 0.18, 10).rotateX(Math.PI / 2),
-    band2: new BoxGeometry(1.44, 0.16, 1.84),
+    bus: new CylinderGeometry(0.72, 0.72, 1.9, 20).rotateX(Math.PI / 2),
     panel: new BoxGeometry(2.6, 0.05, 1.15),
     boom: new CylinderGeometry(0.04, 0.04, 0.5, 6).rotateZ(Math.PI / 2),
     dish: new LatheGeometry(dishPts, 16),
     bigDish: new LatheGeometry(bigDishPts, 20),
     feed: new CylinderGeometry(0.03, 0.03, 0.5, 5),
     hexBus: new CylinderGeometry(0.95, 0.95, 1.2, 6),
-    hexBand: new CylinderGeometry(0.98, 0.98, 0.16, 6),
     longBoom: new CylinderGeometry(0.035, 0.035, 2.4, 5).rotateZ(Math.PI / 2),
     rtg: new CylinderGeometry(0.18, 0.18, 0.7, 8).rotateZ(Math.PI / 2),
     debris,
@@ -265,9 +264,11 @@ function makeMaterials() {
   const coat = softwareGL ? {} : { clearcoat: 1, clearcoatRoughness: 0.06 };
   return {
     gold: new Physical({
-      ...env, color: 0xe3b04a, metalness: 1, roughness: 0.34, normalMap: textures.foilNormal,
-      normalScale: new Vector2(0.6, 0.6),
+      ...env, color: 0xe3b04a, metalness: 1, roughness: 0.3, normalMap: textures.foilNormal,
+      normalScale: new Vector2(0.45, 0.45),
     }),
+    // End caps: a taut, flatter blanket (the side's UV wrinkles would pinch radially there)
+    goldCap: new Physical({ ...env, color: 0xd9a443, metalness: 1, roughness: 0.38 }),
     panel: new Physical({
       ...env, ...coat, map: textures.cells, roughnessMap: textures.cellsRough, metalnessMap: textures.cellsRough,
       roughness: 1, metalness: 1, side: DoubleSide,
@@ -277,14 +278,13 @@ function makeMaterials() {
   };
 }
 
-function buildModel(kind, accentMat, mats) {
+function buildModel(kind, mats) {
   const { geos } = getShared();
   const model = new Group();
   const pivots = [];
   let span;
   if (kind === 'probe') {
-    model.add(new Mesh(geos.hexBus, mats.gold));
-    const band = new Mesh(geos.hexBand, accentMat); band.position.y = 0.3; model.add(band);
+    model.add(new Mesh(geos.hexBus, [mats.gold, mats.goldCap, mats.goldCap]));
     const dish = new Mesh(geos.bigDish, mats.white);
     dish.rotation.x = Math.PI; dish.position.y = -0.62; model.add(dish);
     const feed = new Mesh(geos.feed, mats.dark); feed.position.y = -1.0; model.add(feed);
@@ -296,11 +296,9 @@ function buildModel(kind, accentMat, mats) {
     model.add(new Mesh(geos.debris, mats.dark));
     const shard = new Mesh(geos.shard, mats.panel);
     shard.position.set(0.7, 0.2, 0.1); shard.rotation.set(0.4, 0.7, 0.2); model.add(shard);
-    const tag = new Mesh(geos.band2, accentMat); tag.scale.set(0.35, 0.5, 0.35); tag.position.set(-0.3, 0.45, 0); model.add(tag);
     span = 2.4;
   } else {
-    model.add(new Mesh(geos.bus, mats.gold));
-    const band = new Mesh(geos.band, accentMat); band.position.z = 0.55; model.add(band);
+    model.add(new Mesh(geos.bus, [mats.gold, mats.goldCap, mats.goldCap]));
     for (const side of [-1, 1]) {
       const pivot = new Group();
       pivot.position.x = side * 0.68;
@@ -383,10 +381,9 @@ const _UP = new Vector3(0, 1, 0);
 export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } = {}) {
   const { geos } = getShared();
   const accent = new Color(color);
-  const accentMat = new MeshBasicMaterial({ color: accent });
   const mats = makeMaterials();
   const matList = Object.values(mats);
-  const { model, pivots, span } = buildModel(kind, accentMat, mats);
+  const { model, pivots, span } = buildModel(kind, mats);
 
   const object = new Group();
   object.name = 'Spacecraft';
@@ -519,19 +516,21 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
     } else plume.visible = false;
 
     selectedState = !!selected;
-    ring.visible = selectedState;
-    if (selectedState) ring.scale.setScalar(pxLocal > 0 ? Math.max(RING_PX * pxLocal, span * 1.6) : span * 1.9);
+    // Selection ring: always a thin constant-pixel circle around the craft. Once
+    // the craft itself is bigger than the ring on screen it is obviously the
+    // focus, so the ring hides instead of being blown up into a blurry band.
+    const craftPx = pxLocal > 0 ? span / pxLocal : 0;
+    ring.visible = selectedState && pxLocal > 0 && craftPx < RING_PX * 0.85;
+    if (ring.visible) ring.scale.setScalar(RING_PX * pxLocal);
   }
 
   function setColor(hex) {
     accent.set(hex);
-    accentMat.color.copy(accent);
     haloMat.color.copy(accent);
   }
 
   function dispose() {
     if (object.parent) object.parent.remove(object);
-    accentMat.dispose();
     haloMat.dispose();
     ringMat.dispose();
     plasmaMat.dispose();
