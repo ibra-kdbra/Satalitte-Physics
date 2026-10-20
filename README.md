@@ -84,9 +84,17 @@ node tests/smoke/shot.mjs index.html shot.png 8000   # headless render check (ne
 
 ### Deployment
 
-The site is static and uses only relative paths, so GitHub Pages serves it from
-the repository root of the default branch (Settings → Pages → *Deploy from a
-branch* → `main` / root). `.nojekyll` disables Jekyll processing.
+GitHub Pages is deployed by `.github/workflows/pages.yml` (Settings → Pages →
+*Source: GitHub Actions*). Each run, on every push to `main`, every 6 hours and
+on demand, runs the physics tests, fetches fresh satellite element sets from
+[CelesTrak](https://celestrak.org) into `data/satellites/` (falling back to the
+deployed copy for any group that fails) and publishes the site. The data is
+never committed, so the repository stays small. Everything uses relative paths,
+so the site works under the `/Satalitte-Physics/` sub-path.
+
+Real-satellite data locally: `node scripts/fetch-satellites.mjs` (needs
+internet), or `node tests/fixtures/make-satellites.mjs` for synthetic offline
+data served with `?satdata=tests/fixtures/satellites/`.
 
 ## Credits & references
 

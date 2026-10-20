@@ -11,7 +11,7 @@ preview link for review.
 
 ---
 
-## Phase 1: Foundation and clarity (current)
+## Phase 1: Foundation and clarity (done)
 
 Goal: a correct simulation that a capable first-time user understands within a
 minute.
@@ -32,10 +32,18 @@ minute.
 - [ ] Spacecraft stay clearly visible when zoomed out (screen-space marker),
       true scale up close.
 
-## Phase 2: Real satellites (open data)
+## Phase 2: Real satellites (open data) (done)
 
 Goal: see the real ISS, Hubble, GPS, Starlink and other satellites where they
 are right now, next to your own simulated spacecraft.
+
+Delivered: CelesTrak GP data fetched at each Pages deployment (every 6 h),
+SGP4 via satellite.js in a Web Worker (11,000+ Starlink at interactive rates),
+group toggles, search by name / NORAD id, real-satellite telemetry with
+element age, follow / chase / nadir cameras, "Clone into sandbox", `?norad=`
+links. Verified against the Vallado SGP4 test case; a cloned satellite tracks
+SGP4 within 0.13 km over one orbit. Still open: pass-over-my-location (moved
+to Phase 3 with ground stations).
 
 - Data: CelesTrak GP data (free, public, OMM/JSON format). A scheduled GitHub
   Action fetches a few catalogs (space stations, GPS, geostationary, a
