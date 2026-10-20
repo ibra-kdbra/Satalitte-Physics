@@ -651,9 +651,10 @@ function createAdaptive() {
   });
 }
 
-/** Point sprites (stars, real satellites) keep their CSS size at any drawing-buffer scale. */
+/** Point sprites (stars, real satellites) are sized in drawing-buffer pixels: follow the renderer's pixel ratio. */
 function syncPointSizes() {
-  const r = Math.min(window.devicePixelRatio || 1, 2) * view.getResolutionScale();
+  if (!sky || !catalogPoints) return;
+  const r = view.renderer.getPixelRatio();
   sky.stars.material.uniforms.pixelRatio.value = r;
   catalogPoints.setPixelRatio(r);
 }
@@ -1252,6 +1253,7 @@ function onKeyAction(action) {
 function onResize() {
   view.setSize(window.innerWidth, window.innerHeight);
   adaptive?.reset();
+  syncPointSizes();
   wake();
   lastFrameShift = NaN;
   updateFraming();

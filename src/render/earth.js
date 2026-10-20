@@ -59,11 +59,12 @@ varying vec2 vShadowUv; // cloud-shadow lookup offset from vUv
 // is as bright as a desert's blue reflectance, which turns land magenta (raw
 // satellite data look like that; photos from orbit are haze-corrected). Keep
 // ~40 % of it near nadir and all of it towards the limb, where it makes the rim.
-float hazeFactor(vec3 camRel, vec3 rd, float dist) {
+float viewAirmass(vec3 camRel, vec3 rd, float dist) {
   vec3 n = normalize(camRel + rd * dist);
-  float airmass = 1.0 / max(-dot(n, rd), 0.03);
-  return mix(hazeNadir, 1.0, smoothstep(1.5, 8.0, airmass));
+  return 1.0 / max(-dot(n, rd), 0.03);
 }
+float hazeFromAirmass(float airmass) { return mix(hazeNadir, 1.0, smoothstep(1.5, 8.0, airmass)); }
+float hazeFactor(vec3 camRel, vec3 rd, float dist) { return hazeFromAirmass(viewAirmass(camRel, rd, dist)); }
 // Close-range detail: 3D value noise on the body-fixed unit sphere, used only
 // within ~3500 km of the camera (where the 4K maps' 10 km texels smear).
 float dHash(vec3 p) {
@@ -104,8 +105,13 @@ vec3 aerial(vec3 color, vec3 camRel, vec3 rd, float dist) {
 #else
   vec2 hit = aRaySphere(camRel, rd, A_TR);
   vec3 Tv;
-  vec3 ins = aScatter(camRel, rd, max(hit.x, 0.0), dist, sunDir, Tv);
-  return color * Tv + ins * (sunE * atmoGain * hazeFactor(camRel, rd, dist));
+  // Steep, short paths (looking down) need fewer samples than grazing ones:
+  // half the steps below airmass 1.6, three quarters below 3 (measured: mean
+  // change < 0.6/255, max 2/255 at the default and close views).
+  float airmass = viewAirmass(camRel, rd, dist);
+  int steps = airmass < 1.6 ? ATMO_STEPS / 2 : airmass < 3.0 ? (ATMO_STEPS * 3) / 4 : ATMO_STEPS;
+  vec3 ins = aScatterN(camRel, rd, max(hit.x, 0.0), dist, sunDir, steps, Tv);
+  return color * Tv + ins * (sunE * atmoGain * hazeFromAirmass(airmass));
 #endif
 }
 `;

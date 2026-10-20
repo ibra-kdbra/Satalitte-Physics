@@ -69,7 +69,7 @@ export class CatalogPoints {
     this.positions = new Float32Array(capacity * 3).fill(NaN); // render units, filled on demand (picking)
     this.colors = new Float32Array(capacity * 3);
     this.geometry = new BufferGeometry();
-    this._buildAttributes(new Float32Array(capacity * 3));
+    this._buildAttributes(this.colors);
     this._snapshot = null;
     this.geometry.setDrawRange(0, 0);
     // Fixed bounds (render units, ~2 million km): positions contain NaN for hidden

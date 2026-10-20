@@ -74,21 +74,22 @@ vec3 aSunDepth(float r, float mu) {
 vec3 aSunTransmittance(float r, float mu) { return exp(-aSunDepth(r, mu)); }
 
 // Single-scattered radiance (per unit sun irradiance) along ro + t·rd for
-// t ∈ [t0, t1]; T receives the view transmittance. ro is relative to the
-// planet centre, rd and L unit vectors.
-vec3 aScatter(vec3 ro, vec3 rd, float t0, float t1, vec3 L, out vec3 T) {
+// t ∈ [t0, t1] with \`steps\` samples (≤ ATMO_STEPS); T receives the view
+// transmittance. ro is relative to the planet centre, rd and L unit vectors.
+vec3 aScatterN(vec3 ro, vec3 rd, float t0, float t1, vec3 L, int steps, out vec3 T) {
   T = vec3(1.0);
   if (t1 <= t0) return vec3(0.0);
   float tc = clamp(-dot(ro, rd), t0, t1);           // densest point on the segment
-  int nA = ATMO_STEPS / 2;
+  int nA = steps / 2;
   if (tc <= t0 + 1e-7) nA = 0;
-  else if (tc >= t1 - 1e-7) nA = ATMO_STEPS;
-  int nB = ATMO_STEPS - nA;
+  else if (tc >= t1 - 1e-7) nA = steps;
+  int nB = steps - nA;
   vec2 od = vec2(0.0);
   vec3 sumR = vec3(0.0);
   vec3 sumM = vec3(0.0);
   float tPrev = t0;
   for (int i = 1; i <= ATMO_STEPS; i++) {
+    if (i > steps) break;
     float tNext;
     if (i <= nA) { float u = 1.0 - float(i) / float(nA); tNext = tc - (tc - t0) * u * u; }
     else { float u = float(i - nA) / float(nB); tNext = tc + (t1 - tc) * u * u; }
@@ -111,5 +112,8 @@ vec3 aScatter(vec3 ro, vec3 rd, float t0, float t1, vec3 L, out vec3 T) {
   float pM = 0.1193662 * (1.0 - g2) * (1.0 + nu * nu)            // 3/(8π), Cornette–Shanks
            / ((2.0 + g2) * pow(max(1.0 + g2 - 2.0 * A_G * nu, 1e-4), 1.5));
   return sumR * A_BR * pR + sumM * A_BMS * pM;
+}
+vec3 aScatter(vec3 ro, vec3 rd, float t0, float t1, vec3 L, out vec3 T) {
+  return aScatterN(ro, rd, t0, t1, L, ATMO_STEPS, T);
 }
 `;
