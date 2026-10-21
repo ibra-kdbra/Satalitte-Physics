@@ -443,8 +443,8 @@ if (errs.length) for (const r of errs) console.log(`\n${r.id}: console errors:\n
 if (DO_ALLOC) for (const r of results) console.log(`\n${r.id}: top allocation sites per frame\n  ${r.alloc.top.join('\n  ')}\n  outside src/physics:\n  ${r.alloc.topApp.join('\n  ')}`);
 
 const bq = await bytesPerQuality();
-console.log('\nTexture + star bytes per quality (hardware GPU path; software GL skips the 4K upgrade):');
-for (const [q, v] of Object.entries(bq)) console.log(`  ${pad(q, 7)} first frame ${lpad(kb(v.textures), 8)}   + 4K upgrade ${lpad(kb(v.upgrade), 8)}   = ${kb(v.textures + v.upgrade)}`);
+console.log('\nTexture + star bytes per quality (hardware GPU path; 8K tier allowed; software GL skips upgrades):');
+for (const [q, v] of Object.entries(bq)) console.log(`  ${pad(q, 7)} first frame ${lpad(kb(v.textures), 8)}   + upgrades   ${lpad(kb(v.upgrade), 8)}   = ${kb(v.textures + v.upgrade)}`);
 
 if (JSON_OUT) await writeFile(String(JSON_OUT), JSON.stringify({ root: ROOT, results, bytesPerQuality: bq }, null, 2));
 process.exit(errs.length ? 1 : 0);
