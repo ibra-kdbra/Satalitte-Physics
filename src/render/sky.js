@@ -178,7 +178,7 @@ export function createSky(textures, scene) {
   const sunLight = new DirectionalLight(0xfff4e8, 3.0);
   sunLight.name = 'SunLight';
   scene.add(sunLight); // target stays at the origin (Earth)
-  const ambient = new AmbientLight(0x8899bb, 0.04);
+  const ambient = new AmbientLight(0x8899bb, 0.1); // faint space fill (only spacecraft use standard lighting)
   scene.add(ambient);
 
   const sunAnchor = new Object3D();

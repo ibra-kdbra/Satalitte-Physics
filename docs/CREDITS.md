@@ -7,36 +7,51 @@ rebuilds them from the original downloads).
 
 ## Earth
 
+`scripts/build-hires-textures.py` builds the day, city-light and cloud maps from the full-resolution sources below; `scripts/build-textures.py` builds the relief map and the sky data.
+
 | shipped file | source | licence / attribution |
 |---|---|---|
-| `assets/textures/earth_day_{4096,2048}.jpg` | `example/img/earth-blue-marble.jpg` from [three-globe](https://github.com/vasturiano/three-globe) by Vasco Asturiano | three-globe is MIT licensed. The imagery is NASA Blue Marble (NASA Earth Observatory / Visible Earth); NASA imagery is not copyrighted. Credit: NASA Earth Observatory. |
-| `assets/textures/earth_lights_{4096,2048}.jpg` | `examples/textures/planets/earth_night_4096.jpg` from [three.js](https://github.com/mrdoob/three.js) r185 | three.js is MIT licensed (© three.js authors). The imagery is NASA Black Marble city lights. Credit: NASA Earth Observatory / NOAA NGDC. |
-| `assets/textures/earth_relief_{4096,2048}.jpg`, `assets/textures/earth_clouds_{4096,2048}.jpg` | `examples/textures/planets/earth_bump_roughness_clouds_4096.jpg` from three.js r185 | MIT (© three.js authors). The source packs elevation (R), roughness (G) and clouds (B), derived from NASA Visible Earth data. |
+| `assets/textures/earth_day_{8192,4096,2048}.jpg` | NASA Blue Marble Next Generation, July 2004, 21600×10800 (NASA Earth Observatory / Visible Earth) | NASA imagery, not copyrighted. Credit: NASA Earth Observatory (Reto Stöckli). The water mask used to treat the oceans comes from the Solar System Scope 8K specular map (CC BY 4.0, © Solar System Scope, solarsystemscope.com). |
+| `assets/textures/earth_lights_{8192,4096,2048}.jpg` | NASA Black Marble 2016, 13500×6750 | NASA imagery, not copyrighted. Credit: NASA Earth Observatory (Joshua Stevens, Miguel Román, NASA GSFC). |
+| `assets/textures/earth_clouds_{4096,2048}.jpg` | Solar System Scope 8K clouds | CC BY 4.0, © Solar System Scope (solarsystemscope.com), based on NASA imagery. |
+| `assets/textures/earth_relief_{4096,2048}.jpg` | `examples/textures/planets/earth_bump_roughness_clouds_4096.jpg` from [three.js](https://github.com/mrdoob/three.js) r185 | MIT (© three.js authors), derived from NASA Visible Earth data. |
 
 Processing:
-- Day map: the deep ocean was darkened and its bathymetry shading flattened, so oceans look as they do in photos from orbit. Shallow shelves are kept.
-- Relief map: R holds elevation, G holds a water mask derived from the roughness channel. It is saved at 4:4:4 so the channels stay separate.
-- Clouds: the B channel of the three.js map, saved as a separate greyscale image.
-- City lights: the dark-blue ground of Black Marble was removed, keeping only the emitted light, as greyscale.
+- Day map: resampled from 21600 px. Over water, the deep ocean was darkened and its bathymetry shading flattened, so oceans look as they do in photos from orbit; shallow shelves are kept.
+- City lights: the dark ground of Black Marble was removed, keeping only the emitted light, as greyscale.
+- Relief map: R holds elevation, G holds a water mask derived from the roughness channel; saved at 4:4:4 so the channels stay separate.
+- Every new map was checked against the previous one by correlation (also against mirrored and shifted versions) to rule out a flipped or shifted projection.
 
 ## Moon
 
 | shipped file | source | licence / attribution |
 |---|---|---|
-| `assets/textures/moon_{2048,1024}.jpg` | the Moon map of this project's original 2021 version (`legacy/images/moon_texture.jpg` in this repository, same owner), 2000×1000 greyscale | The source of the imagery was not recorded at the time. Processing: resampled to 2048×1024, light unsharp mask, plus a 1024×512 copy for phones. |
+| `assets/textures/moon_{4096,2048,1024}.jpg` | NASA Scientific Visualization Studio, CGI Moon Kit: LRO LROC colour mosaic, 8192×4096 (converted to grey) | NASA imagery, not copyrighted. Credit: NASA's Scientific Visualization Studio (Ernie Wright), LRO LROC team (Arizona State University). |
+| `assets/textures/moon_normal_{2048,1024}.jpg` | NASA SVS CGI Moon Kit: LRO LOLA elevation, 16 px/degree | NASA data, not copyrighted. Credit: NASA's Scientific Visualization Studio, LRO LOLA team (NASA GSFC). Processing: tangent-space normals from the true slopes on the sphere (x = east, y = north), relief exaggerated 3×, saved at 4:4:4. |
+
+The maps were checked against lunar landmarks (maria dark and low, Tycho bright, the South Pole–Aitken basin floor lowest). The project's original 2021 Moon map (`legacy/images/moon_texture.jpg`) is no longer used by the app.
 
 ## Sky
 
 | shipped file | source | licence / attribution |
 |---|---|---|
 | `assets/stars.bin` | `data/stars.8.json` from [d3-celestial](https://github.com/ofrohn/d3-celestial) 0.7.35 by Olaf Frohn | BSD-3-Clause, © 2015 Olaf Frohn. The star data come from XHIP: An Extended Hipparcos Compilation (Anderson & Francis 2012, VizieR V/137D), based on the ESA Hipparcos mission. |
-| `assets/textures/milkyway_1024.jpg` | `data/mw.json` from d3-celestial 0.7.35 | BSD-3-Clause, © 2015 Olaf Frohn. The outlines come from the Milky Way Outline Catalog by Jose R. Vieira (skymap.com). |
+| `assets/textures/milkyway_2048.jpg` | NASA Scientific Visualization Studio, Deep Star Maps 2020 (Milky Way, celestial frame) | NASA, not copyrighted. Credit: NASA/Goddard Space Flight Center Scientific Visualization Studio; Gaia DR2: ESA/Gaia/DPAC. Converted to grey, same projection as the 1024 map. |
+| `assets/textures/milkyway_1024.jpg` ('low' quality) | `data/mw.json` from d3-celestial 0.7.35 | BSD-3-Clause, © 2015 Olaf Frohn. The outlines come from the Milky Way Outline Catalog by Jose R. Vieira (skymap.com). |
 
 Processing:
 - Stars: 25,723 stars brighter than magnitude 7.5. Positions are converted to unit vectors in the app's equatorial world frame, and B−V colour indices are converted to RGB through stellar temperature (Ballesteros 2012) and a blackbody fit. The result is packed as 10 bytes per star.
-- Milky Way: the five brightness levels were rasterised in RA/Dec, blurred at two scales and saved as a 1024×512 greyscale sky map.
+- Milky Way (1024): the five brightness levels were rasterised in RA/Dec, blurred at two scales and saved as a greyscale sky map.
 
 The Sun is drawn procedurally; no image is used.
+
+## Download size per quality
+
+| quality | first frame | after upgrades |
+|---|---|---|
+| low (phones) | ≈ 2.1 MB (2K Earth, 1K Moon and Moon relief, 1K Milky Way) | no upgrades |
+| medium | ≈ 2.7 MB (2K Earth, 2K Moon, 1K Moon relief, 2K Milky Way) | + 4K day and clouds, 2K Moon relief: ≈ 7.3 MB in total |
+| high | ≈ 2.7 MB | + 4K Earth maps, 4K Moon and 2K Moon relief, then 8K day and city lights (desktop GPUs only): ≈ 14.5 MB in total |
 
 ## Libraries
 
@@ -48,4 +63,4 @@ The Sun is drawn procedurally; no image is used.
 
 - Atmospheric scattering coefficients (Rayleigh, Mie, ozone) follow E. Bruneton & F. Neyret, *Precomputed Atmospheric Scattering* (2008) and Bruneton's 2017 reference implementation.
 - The Chapman-function approximation for sunlight optical depth is from C. Schüler, *An Approximation to the Chapman Grazing-Incidence Function for Atmospheric Scattering*, GPU Pro 3 (2012).
-- Lunar photometry uses Lommel–Seeliger with a Hapke-style opposition surge (B. Hapke, *Theory of Reflectance and Emittance Spectroscopy*).
+- Lunar photometry uses the Lunar-Lambert model (A. S. McEwen, "Photometric functions for photoclinometry and other applications", Icarus 92, 1991), a phase-dependent blend of Lommel–Seeliger and Lambert, with a Hapke-style opposition surge (B. Hapke, *Theory of Reflectance and Emittance Spectroscopy*).

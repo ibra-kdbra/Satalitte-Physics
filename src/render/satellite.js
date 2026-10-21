@@ -14,7 +14,7 @@
 // ±X = orbit normal (solar panel wings), dish faces nadir (-Y). The root object is never rotated, only
 // translated and uniformly scaled, so the halo/ring sprites stay screen-aligned.
 import {
-  Group, Mesh, BoxGeometry, CylinderGeometry, LatheGeometry, IcosahedronGeometry, SphereGeometry,
+  Group, Mesh, BoxGeometry, CylinderGeometry, LatheGeometry, IcosahedronGeometry, SphereGeometry, CircleGeometry,
   MeshPhysicalMaterial, MeshStandardMaterial, ShaderMaterial, PMREMGenerator, Scene, BackSide, Sprite, SpriteMaterial, DataTexture,
   RGBAFormat, SRGBColorSpace, NoColorSpace, LinearFilter, LinearMipmapLinearFilter, RepeatWrapping, Vector2,
   Vector3, Matrix4, Quaternion, Color, AdditiveBlending, DoubleSide,
@@ -167,28 +167,31 @@ function getShared() {
     plasma: new SphereGeometry(1, 20, 14),
     // exhaust plume: cone along +Y, base (nozzle) at the origin, open at the tip
     plume: new CylinderGeometry(0.0, 1, 1, 16, 4, true).rotateX(Math.PI).translate(0, 0.5, 0),
-    flashShell: new SphereGeometry(1, 32, 16),
   };
   shared = { textures, geos };
   return shared;
 }
 
 // ---------------------------------------------------------------------------
-// Re-entry plasma sheath: Fresnel shell squashed at the nose, stretched into a
-// tail behind the craft, flickering. `heating` 0..1 drives length and colour.
+// Re-entry plasma: an emissive, optically thin shock layer around the craft.
+// Glow follows the path length through a thin shell (brightest at the
+// silhouette band, soft to zero at the very edge), a white-hot stagnation cap
+// at the nose (+Z, prograde), orange flanks and a red, streaky wake. Values go
+// well above 1 so the bloom pass makes it glow. A separate cone carries the
+// trailing wake. `heating` 0..1 drives size, temperature and brightness.
 const PLASMA_VERT = /* glsl */`
 uniform float heating;
 #include <common>
 #include <logdepthbuf_pars_vertex>
 varying vec3 vNormalW;
 varying vec3 vViewW;
-varying float vTail;
+varying vec3 vLocal;
 void main() {
   vec3 p = position;
   float tail = step(p.z, 0.0);
-  p.z *= mix(0.75, 1.0 + 3.5 * heating, tail);
-  p.xy *= mix(1.0, 1.0 - 0.55 * (-position.z), tail); // taper the tail
-  vTail = tail * (-position.z);
+  p.z *= mix(0.6, 1.0 + 1.5 * heating, tail);          // flattened bow shock, stretched flanks
+  p.xy *= mix(1.0, 1.0 - 0.45 * (-position.z), tail);
+  vLocal = position;
   vec4 wp = modelMatrix * vec4(p, 1.0);
   vNormalW = normalize(mat3(modelMatrix) * normal);
   vViewW = cameraPosition - wp.xyz;
@@ -203,17 +206,44 @@ uniform float time;
 #include <logdepthbuf_pars_fragment>
 varying vec3 vNormalW;
 varying vec3 vViewW;
-varying float vTail;
+varying vec3 vLocal;
 void main() {
   #include <logdepthbuf_fragment>
   float nv = abs(dot(normalize(vNormalW), normalize(vViewW)));
-  float fres = pow(1.0 - nv, 1.5);
-  float flicker = 0.85 + 0.15 * sin(time * 37.0 + vTail * 9.0) * sin(time * 23.0);
-  vec3 hot = mix(vec3(1.0, 0.32, 0.06), vec3(1.0, 0.85, 0.65), smoothstep(0.4, 1.0, heating));
-  // glow ∝ optical thickness: bright through the middle, soft silhouette, hot nose
-  float k = heating * pow(nv, 1.2) * (1.0 - vTail) * (1.0 - vTail) * flicker;
-  k += heating * fres * 0.15 * (1.0 - vTail);
-  gl_FragColor = vec4(hot * k * 2.6, 1.0);
+  // thin glowing shell: path length ~ 1/nv, faded to 0 right at the silhouette
+  float shell = min(1.0 / max(nv, 0.2), 3.0) * smoothstep(0.0, 0.25, nv);
+  float a = vLocal.z;                                   // −1 wake … +1 nose
+  float nose = smoothstep(0.1, 0.95, a);
+  float ang = atan(vLocal.y, vLocal.x);
+  float streak = 0.75 + 0.25 * sin(ang * 9.0 + a * 4.0 - time * 23.0) * sin(ang * 5.0 - time * 17.0);
+  vec3 red = vec3(1.0, 0.16, 0.03), orange = vec3(1.0, 0.45, 0.1), white = vec3(1.0, 0.92, 0.75);
+  vec3 col = mix(red, orange, smoothstep(-1.0, 0.1, a));
+  col = mix(col, white, nose * smoothstep(0.2, 0.8, heating));
+  float h = heating * heating;
+  float k = h * shell * mix(streak, 1.0, nose) * (0.35 + 3.2 * nose) * smoothstep(-1.0, -0.4, a + 0.3 * heating);
+  gl_FragColor = vec4(col * k * 1.6, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`;
+
+// Trailing wake: a cone of hot gas behind the craft, orange → deep red, fading.
+const WAKE_FRAG = /* glsl */`
+uniform float heating;
+uniform float time;
+#include <common>
+#include <logdepthbuf_pars_fragment>
+varying vec2 vUv;
+varying vec3 vNormalW;
+varying vec3 vViewW;
+void main() {
+  #include <logdepthbuf_fragment>
+  float nv = abs(dot(normalize(vNormalW), normalize(vViewW)));
+  float along = vUv.y;                                   // 0 at the craft → 1 at the tail end
+  float core = pow(nv, 2.5);                             // soft edges: no visible cone silhouette
+  float flick = 0.85 + 0.15 * sin(along * 25.0 - time * 45.0);
+  vec3 col = mix(vec3(1.0, 0.5, 0.12), vec3(0.9, 0.12, 0.03), smoothstep(0.0, 0.6, along));
+  float k = heating * heating * pow(1.0 - along, 3.0) * core * flick * 1.4;
+  gl_FragColor = vec4(col * k, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
@@ -420,6 +450,20 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
   plasma.scale.set(span * 0.32, span * 0.32, span * 0.42);
   plasma.visible = false;
   model.add(plasma);
+  const wakeMat = new ShaderMaterial({
+    uniforms: { heating: plasmaMat.uniforms.heating, time: plasmaMat.uniforms.time },
+    vertexShader: PLUME_VERT,
+    fragmentShader: WAKE_FRAG,
+    transparent: true,
+    depthWrite: false,
+    side: DoubleSide,
+    blending: AdditiveBlending,
+  });
+  const wake = new Mesh(geos.plume, wakeMat); // cone along +Y from the origin
+  wake.rotation.x = -Math.PI / 2;            // → along −Z (behind the craft)
+  wake.position.z = -span * 0.25;
+  wake.visible = false;
+  model.add(wake);
 
   const plumeMat = new ShaderMaterial({
     uniforms: { time: { value: 0 }, strength: { value: 1 } },
@@ -457,7 +501,9 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
       const ang = Math.asin(Math.min(1, EARTH_R / Math.max(r, EARTH_R)));
       const solid = Math.min(1.2, (1 - Math.cos(ang)) / (1 - Math.cos(ENV_EARTH_ANGLE)));
       const lit = sunDir && r > 0 ? 0.5 + 0.5 * object.position.dot(sunDir) / r : 0.5;
-      const k = 0.04 + 1.5 * solid * lit * lit;
+      // Earth-shine fill from below ∝ apparent size × lit fraction, plus a small
+      // floor (stars, scattered light) so shadowed sides stay readable.
+      const k = 0.2 + 2.4 * solid * lit;
       for (let i = 0; i < matList.length; i++) {
         matList[i].envMapIntensity = k;
         matList[i].envMapRotation.setFromQuaternion(model.quaternion);
@@ -501,6 +547,8 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
     const now = performance.now() * 0.001;
     const heat = Math.min(1, Math.max(0, heating));
     plasma.visible = heat > 0.01;
+    wake.visible = heat > 0.05;
+    if (wake.visible) wake.scale.set(span * 0.22, span * (0.8 + 2.4 * heat), span * 0.22);
     plasmaMat.uniforms.heating.value = heat;
     plasmaMat.uniforms.time.value = now % 1000;
 
@@ -534,6 +582,7 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
     haloMat.dispose();
     ringMat.dispose();
     plasmaMat.dispose();
+    wakeMat.dispose();
     plumeMat.dispose();
     for (const m of matList) m.dispose();
   }
@@ -542,58 +591,76 @@ export function createSatelliteVisual({ color = 0x66ccff, kind = 'satellite' } =
 }
 
 // ---------------------------------------------------------------------------
-// Impact flash: white-hot core + expanding coloured shock dome, ~1.8 s.
-const FLASH_VERT = /* glsl */`
+// Impact flash: a brief white-hot flash, an orange fireball glow and a soft
+// shockwave ring that races out along the ground, all sized by the impact
+// energy (not the craft colour). ~1.6 s.
+const RING_VERT = /* glsl */`
 #include <common>
 #include <logdepthbuf_pars_vertex>
-varying vec3 vNormalW;
-varying vec3 vViewW;
+varying vec2 vP;
 void main() {
-  vec4 wp = modelMatrix * vec4(position, 1.0);
-  vNormalW = normalize(mat3(modelMatrix) * normal);
-  vViewW = cameraPosition - wp.xyz;
-  gl_Position = projectionMatrix * viewMatrix * wp;
+  vP = position.xy;                                     // plane of radius 1
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   #include <logdepthbuf_vertex>
 }`;
-const FLASH_FRAG = /* glsl */`
-uniform vec3 color;
+const RING_FRAG = /* glsl */`
+uniform float radius;    // current front radius (plane units, ≤ 1)
+uniform float width;
 uniform float strength;
 #include <common>
 #include <logdepthbuf_pars_fragment>
-varying vec3 vNormalW;
-varying vec3 vViewW;
+varying vec2 vP;
 void main() {
   #include <logdepthbuf_fragment>
-  float nv = abs(dot(normalize(vNormalW), normalize(vViewW)));
-  float rim = pow(1.0 - nv, 2.0);
-  gl_FragColor = vec4(color * (0.15 + 1.6 * rim) * strength, 1.0);
+  float r = length(vP);
+  if (r > 1.0) discard;
+  float d = (r - radius) / width;
+  // sharp leading edge, soft trailing glow behind the front
+  float front = d > 0.0 ? exp(-d * d * 6.0) : exp(-d * d * 0.8);
+  vec3 col = mix(vec3(1.0, 0.55, 0.22), vec3(1.0, 0.9, 0.75), exp(-d * d * 10.0));
+  gl_FragColor = vec4(col * front * strength, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
 
-const FLASH_LIFE = 1.8;   // seconds (real time)
-const FLASH_RADIUS = 0.9; // render units, final shock radius (~900 km)
+const FLASH_LIFE = 1.6;   // seconds (real time)
+const FLASH_RADIUS = 0.9; // render units: shockwave reach for energy 1 (~900 km)
+const _zAxis = new Vector3(0, 0, 1);
+const _outward = new Vector3();
 
-export function createImpactFlash(scene, position, color = 0xffaa55) {
-  const { geos } = getShared();
-  const c = new Color(color);
+/**
+ * @param {Vector3} position impact point (render units, on the surface)
+ * @param {*} color kept for API compatibility; the flash colour is physical (hot white/orange)
+ * @param {{ energy?: number, normal?: Vector3 }} [opts] energy relative to a typical
+ *   LEO impact (1 ≈ 1 t at 7.5 km/s); size ∝ energy^(1/3). normal: local vertical
+ *   (default: away from the Earth's centre).
+ */
+export function createImpactFlash(scene, position, color, { energy = 1, normal } = {}) {
+  const size = FLASH_RADIUS * Math.min(2, Math.max(0.5, Math.cbrt(Math.max(energy, 1e-6))));
   const group = new Group();
   group.position.copy(position);
 
-  const coreMat = new SpriteMaterial({ map: getSpriteTexture('glow'), color: new Color(6, 5, 4), blending: AdditiveBlending, depthWrite: false, transparent: true });
+  const coreMat = new SpriteMaterial({ map: getSpriteTexture('glow'), color: new Color(9, 8, 6.5), blending: AdditiveBlending, depthWrite: false, transparent: true });
   const core = new Sprite(coreMat);
-  group.add(core);
+  const glowMat = new SpriteMaterial({ map: getSpriteTexture('glow'), color: new Color(3.2, 1.3, 0.35), blending: AdditiveBlending, depthWrite: false, transparent: true });
+  const glow = new Sprite(glowMat);
+  group.add(glow, core);
 
-  const shellMat = new ShaderMaterial({
-    uniforms: { color: { value: c.clone().multiplyScalar(2.5) }, strength: { value: 1 } },
-    vertexShader: FLASH_VERT,
-    fragmentShader: FLASH_FRAG,
+  const ringMat = new ShaderMaterial({
+    uniforms: { radius: { value: 0 }, width: { value: 0.08 }, strength: { value: 1 } },
+    vertexShader: RING_VERT,
+    fragmentShader: RING_FRAG,
     transparent: true,
     depthWrite: false,
+    side: DoubleSide,
     blending: AdditiveBlending,
   });
-  const shell = new Mesh(geos.flashShell, shellMat);
-  group.add(shell);
+  const ring = new Mesh(getRingPlane(), ringMat);
+  _outward.copy(normal || position).normalize();
+  ring.quaternion.setFromUnitVectors(_zAxis, _outward);
+  ring.position.copy(_outward).multiplyScalar(size * 0.004); // just above the ground
+  ring.scale.setScalar(size);
+  group.add(ring);
   scene.add(group);
 
   let age = 0;
@@ -604,14 +671,16 @@ export function createImpactFlash(scene, position, color = 0xffaa55) {
     age += Math.min(Math.max(dt, 0), 0.1);
     const t = age / FLASH_LIFE;
     if (t >= 1) { dispose(); return false; }
-    // core: instant blinding pop that fades fast
-    const coreFade = Math.exp(-t * 6);
-    core.scale.setScalar(FLASH_RADIUS * (0.35 + 0.9 * Math.sqrt(t)));
-    coreMat.opacity = coreFade;
-    // shock: ease-out expansion, fades with t²
-    const r = FLASH_RADIUS * (1 - (1 - t) ** 3);
-    shell.scale.setScalar(Math.max(r, 1e-4));
-    shellMat.uniforms.strength.value = (1 - t) * (1 - t);
+    // flash: blinding pop in the first ~0.2 s
+    core.scale.setScalar(size * (0.45 + 0.4 * Math.sqrt(t)));
+    coreMat.opacity = Math.exp(-t * 5);
+    // fireball glow: swells, cools, fades
+    glow.scale.setScalar(size * (0.6 + 0.9 * Math.sqrt(t)));
+    glowMat.opacity = Math.exp(-t * 2.2) * Math.min(1, t * 20 + 0.3);
+    // shockwave: fast, decelerating (blast-wave r ∝ t^0.4), fading
+    ringMat.uniforms.radius.value = 0.95 * Math.pow(t, 0.4);
+    ringMat.uniforms.width.value = 0.05 + 0.1 * t;
+    ringMat.uniforms.strength.value = 2.2 * (1 - t) * (1 - t);
     return true;
   }
 
@@ -620,9 +689,16 @@ export function createImpactFlash(scene, position, color = 0xffaa55) {
     alive = false;
     scene.remove(group);
     coreMat.dispose();
-    shellMat.dispose();
+    glowMat.dispose();
+    ringMat.dispose();
   }
 
   update(0);
   return { update, dispose };
+}
+
+let ringPlane = null;
+function getRingPlane() {
+  if (!ringPlane) ringPlane = new CircleGeometry(1, 64);
+  return ringPlane;
 }

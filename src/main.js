@@ -142,6 +142,8 @@ async function boot() {
     onProgress: (f, label) => hud.setLoading?.(0.05 + f * 0.85, label || 'Loading textures'),
   });
   hud.setLoading?.(0.92, 'Building the Earth–Moon system');
+  // Sharper texture tiers arrive in the background; redraw even while paused.
+  for (const key of Object.keys(textures)) textures.watch(key, () => wake());
 
   const { scene, camera } = view;
   earth = createEarth(textures, { quality: settings.graphics.quality });
@@ -493,7 +495,10 @@ function handleEvents(events) {
       if (!e) continue;
       const color = parseInt(e.sat.color.slice(1), 16);
       const pos = toRender(e.sat.pos);
-      flashes.push(createImpactFlash(view.scene, pos, color));
+      // Flash size scales with kinetic energy, relative to a 1.2 t craft at orbital speed.
+      const energy = ((e.sat.dryMass + e.sat.fuel) / 1200) * (ev.speedKms / 7.8) ** 2;
+      const normal = ev.body === 'moon' ? pos.clone().sub(moon.group.position) : pos;
+      flashes.push(createImpactFlash(view.scene, pos, color, { energy, normal }));
       if (ev.body === 'earth') {
         earth.addImpactMarker(toVec3(ev.localDir), color);
       } else {

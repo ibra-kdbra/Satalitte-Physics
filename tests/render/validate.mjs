@@ -1436,12 +1436,16 @@ for (const q of ['low', 'medium', 'high']) {
         const c = newCase(id, id, `render.html q=${q}, ${hw ? 'GPU code path (hw=1)' : 'software path (auto)'}`);
         await ctx.frames(2);
         const expect = hw ? { low: [], medium: ['day', 'clouds'], high: ['day', 'relief', 'clouds', 'lights'] }[q] : [];
+        // third tier (8K day + lights) on 'high' when the GPU takes 8192² textures (fine pointer, not software GL)
+        const max8k = await ctx.eval(() => window.__rq.renderer.capabilities.maxTextureSize >= 8192);
+        const expect8 = hw && q === 'high' && max8k ? ['day', 'lights'] : [];
+        const want = (k) => (expect8.includes(k) ? 8192 : expect.includes(k) ? 4096 : 2048);
         // wait for the progressive upgrade (1.5 s delay + download + upload) when expected
         let tex = null;
         const t0 = Date.now();
         for (;;) {
           tex = await ctx.eval(() => { const m = window.__rqh.byName('EarthSurface').material.uniforms; return { day: m.dayMap.value.image?.width, relief: m.reliefMap.value.image?.width, clouds: m.cloudMap.value.image?.width, lights: m.nightMap.value.image?.width }; });
-          const done = expect.every((k) => tex[k] === 4096);
+          const done = expect.every((k) => tex[k] === want(k));
           if ((expect.length && done) || (!expect.length && Date.now() - t0 > 8000) || Date.now() - t0 > 150000) break;
           await ctx.page.waitForTimeout(1000);
         }
@@ -1449,10 +1453,12 @@ for (const q of ['low', 'medium', 'high']) {
         const s = await ctx.shot(id);
         c.image = s.path;
         imageSanity(c, s.img);
-        const req = ctx.log.requests.map((r) => r.url).filter((u) => /_4096\.jpg/.test(u)).map((u) => u.match(/earth_(\w+)_4096/)?.[1]);
+        const req = ctx.log.requests.map((r) => r.url).filter((u) => /earth_\w+_4096\.jpg/.test(u)).map((u) => u.match(/earth_(\w+)_4096/)?.[1]);
+        const req8 = ctx.log.requests.map((r) => r.url).filter((u) => /earth_\w+_8192\.jpg/.test(u)).map((u) => u.match(/earth_(\w+)_8192/)?.[1]).sort();
         const reqNorm = req.map((k) => ({ day: 'day', relief: 'relief', clouds: 'clouds', lights: 'lights' }[k] || k)).sort();
         c.check('4K requests as specified', JSON.stringify(reqNorm) === JSON.stringify([...expect].sort()), reqNorm.join(',') || 'none', expect.join(',') || 'none');
-        c.check('materials use the expected map size', Object.entries(tex).every(([k, w]) => w === (expect.includes(k) ? 4096 : 2048)), JSON.stringify(tex), `4096 for ${expect.join(',') || 'none'}, else 2048`);
+        c.check('8K requests as specified', JSON.stringify(req8) === JSON.stringify([...expect8].sort()), req8.join(',') || 'none', expect8.join(',') || 'none');
+        c.check('materials use the expected map size', Object.entries(tex).every(([k, w]) => w === want(k)), JSON.stringify(tex), `${expect8.length ? `8192 for ${expect8.join(',')}, ` : ''}4096 for ${expect.filter((k) => !expect8.includes(k)).join(',') || 'none'}, else 2048`);
         await ctx.health(c);
       },
     });

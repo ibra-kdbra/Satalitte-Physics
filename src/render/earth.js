@@ -256,9 +256,17 @@ void main() {
 #endif
   float ndl = max(dot(Nb, L), 0.0);
   vec3 color = albedo * RECIPROCAL_PI * E * ndl * shadow;
-  // Skylight (stands in for multiple scattering): bluish, fades through twilight
-  float dayAmt = smoothstep(-0.12, 0.3, mu);
-  vec3 sky = vec3(0.32, 0.48, 0.85) * (0.10 * sunE) * dayAmt;
+  // Grazing sunlight: within a few degrees of the terminator the low Sun still
+  // lights slopes, haze and the ground through forward scattering; that light
+  // has crossed ~30 air masses and arrives orange-red (E is already reddened).
+  float graze = smoothstep(-0.05, 0.08, mu) * (1.0 - smoothstep(0.08, 0.3, mu));
+  color += albedo * RECIPROCAL_PI * E * (0.35 * graze) * shadow;
+  // Skylight (stands in for multiple scattering): blue by day; with the Sun
+  // low, the sky that lights the ground is itself lit through a long air path,
+  // so it turns warm and weak — the terminator band on bare ground is warm too.
+  float dayAmt = smoothstep(-0.1, 0.35, mu);
+  vec3 skyCol = mix(vec3(0.85, 0.5, 0.33), vec3(0.32, 0.48, 0.85), smoothstep(0.03, 0.4, mu));
+  vec3 sky = skyCol * (0.10 * sunE) * dayAmt * dayAmt;
   color += albedo * RECIPROCAL_PI * sky * (0.6 + 0.4 * shadow);
 
   // Water: GGX sun glint (wind-roughened sea) + Fresnel sky reflection
@@ -281,7 +289,26 @@ void main() {
 
   // City lights: fade in after sunset, dimmed under cloud
   float night = (1.0 - smoothstep(-0.16, 0.03, mu)) * cityLights;
-  float lights = texture2D(nightMap, vUv).r;
+  float lights = 0.0;
+  if (night > 0.001) {
+#ifdef AP_VERTEX
+    lights = texture2D(nightMap, vUv).r;
+#else
+    // Cubic B-spline filter (4 bilinear taps): close up, the light texels
+    // blur into smooth glows instead of bilinear diamonds.
+    vec2 tsL = vec2(textureSize(nightMap, 0));
+    vec2 st = vUv * tsL - 0.5;
+    vec2 i = floor(st), f = st - i;
+    vec2 w0 = (1.0 - f) * (1.0 - f) * (1.0 - f) / 6.0;
+    vec2 w1 = (4.0 - 6.0 * f * f + 3.0 * f * f * f) / 6.0;
+    vec2 w3 = f * f * f / 6.0;
+    vec2 w2 = 1.0 - w0 - w1 - w3;
+    vec2 s0 = w0 + w1, s1 = w2 + w3;
+    vec2 c0 = (i - 0.5 + w1 / s0) / tsL, c1 = (i + 1.5 + w3 / s1) / tsL;
+    lights = (texture2D(nightMap, vec2(c0.x, c0.y)).r * s0.x + texture2D(nightMap, vec2(c1.x, c0.y)).r * s1.x) * s0.y
+           + (texture2D(nightMap, vec2(c0.x, c1.y)).r * s0.x + texture2D(nightMap, vec2(c1.x, c1.y)).r * s1.x) * s1.y;
+#endif
+  }
   color += vec3(1.0, 0.70, 0.38) * (lights * 2.4 * night * (1.0 - 0.8 * cover));
   color += albedo * 0.0012; // starlight/airglow floor: the night side is not pure black
 

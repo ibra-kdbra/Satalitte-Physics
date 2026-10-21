@@ -28,6 +28,7 @@
 // Query params (all optional):
 //   cam=x,y,z  target=x,y,z  sun=x,y,z  rot=<earth rad>  q=high|medium|low  bloom=0|1
 //   t=<seconds>  freezes the animation at that time (deterministic screenshots)
+//   moonll=lat,lon,alt[,tilt] camera above a lunar feature
 //   moon=x,y,z   Moon position (e.g. 384,0,0 for the real distance)
 //   heat=0..1    re-entry heating on satellite #3       sel=0|1|2 selected satellite
 //   clean=1 hide overlays, fov=<deg> camera field of view
@@ -70,6 +71,7 @@ addEventListener('resize', () => view.setSize(innerWidth, innerHeight));
 
 const textures = await loadTextures(renderer, {
   quality, software, basePath: '../../assets/textures/',
+  upgradeDelayMs: P.get('noup') === '1' ? 1e9 : 1500, // noup=1: keep the start-up tier (quick screenshots)
   onProgress: (f, label) => { info.textContent = `loading ${Math.round(f * 100)}% ${label}`; },
 });
 
@@ -175,6 +177,23 @@ if (P.get('clean') === '1') {
   for (const s of sats) { s.vis.object.visible = false; s.trail.setVisible(false); s.label.visible = false; }
   orbit.setVisible(false); target.setVisible(false); grid.setVisible(false); moonLabel.visible = false;
   preview.hide(); earth.clearImpactMarkers(); moon.clearImpactMarkers(); flash.dispose();
+}
+// moonll=lat,lon,alt[,tilt]: camera above a lunar feature (alt in render units),
+// looking down at it (tilt: offset towards lunar north, for an oblique view)
+if (P.has('moonll')) {
+  const [la, lo, alt, tilt = 0] = P.get('moonll').split(',').map(Number);
+  moon.update({ position: moonPos, sunDir, earthPosition: earth.group.position });
+  moon.surface.updateMatrixWorld(true);
+  const q = moon.surface.getWorldQuaternion(new THREE.Quaternion());
+  const d = ll(la, lo).applyQuaternion(q);
+  const north = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+  // sunll=lat,lon: the Sun overhead at this point of the Moon (body frame)
+  if (P.has('sunll')) { const [sa, so] = P.get('sunll').split(',').map(Number); sunDir.copy(ll(sa, so).applyQuaternion(q)); }
+  const target = moonPos.clone().addScaledVector(d, 1.7374);
+  controls.target.copy(target);
+  camera.position.copy(target).addScaledVector(d, alt).addScaledVector(north, -tilt);
+  camera.up.copy(north);
+  controls.update();
 }
 let t = t0, last = performance.now(), flashTimer = 0, frames = 0;
 function frame(now) {

@@ -51,18 +51,23 @@ Do not import other addons (they are not vendored).
 
 ## Textures (`assets/textures/`) and sky data
 
-Rebuilt from the original downloads by `scripts/build-textures.py`; sources and
-licences in `docs/CREDITS.md`. 2K maps load first; on 'high'/'medium' the 4K
-maps replace them shortly after start-up (not on 'low').
+Rebuilt from the original downloads by `scripts/build-hires-textures.py` (Earth
+day/lights/clouds, Moon, Milky Way 2K) and `scripts/build-textures.py` (relief,
+Milky Way 1K, stars); sources and licences in `docs/CREDITS.md`. The first
+frame uses 2K Earth maps; upgrades are downloaded afterwards and uploaded in
+idle time, one tier at a time (`textures.js`): 'medium' → 4K day + clouds;
+'high' → 4K Earth maps and 4K Moon, then 8K day + lights when the GPU allows
+8192² textures and the pointer is fine. 'low' and software GL never upgrade.
 
 | file | content | notes |
 |---|---|---|
-| earth_day_{4096,2048}.jpg | RGB | day albedo (sRGB), Blue Marble, deep ocean flattened |
+| earth_day_{8192,4096,2048}.jpg | RGB | day albedo (sRGB), Blue Marble NG July 2004, deep ocean flattened |
 | earth_relief_{4096,2048}.jpg | RGB data | R = elevation (bump), G = water mask (NoColorSpace) |
 | earth_clouds_{4096,2048}.jpg | L | cloud coverage, used as alpha |
-| earth_lights_{4096,2048}.jpg | L | Black Marble city light intensity (sRGB) |
-| moon_{2048,1024}.jpg | L | Moon albedo ('low' uses 1024) |
-| milkyway_1024.jpg | L | Milky Way brightness in RA/Dec (u = 0.5 − RA/360°) |
+| earth_lights_{8192,4096,2048}.jpg | L | Black Marble 2016 city light intensity (sRGB) |
+| moon_{4096,2048,1024}.jpg | L | LRO LROC albedo (high 2048 → 4096, medium 2048, low 1024) |
+| moon_normal_{2048,1024}.jpg | RGB data | LOLA tangent-space normals, x = east, y = north, 3× relief (NoColorSpace); 1024 first, 2048 upgrade on medium/high |
+| milkyway_{2048,1024}.jpg | L | Milky Way in RA/Dec (u = 0.5 − RA/360°); 2048 on medium/high |
 | `assets/stars.bin` | binary | 25,723 Hipparcos stars ≤ mag 7.5: 'STAR', uint32 n, then per star int16 x,y,z (world frame ×32767), uint8 (mag+2)×25, uint8 r,g,b |
 
 ---
@@ -103,9 +108,9 @@ only the sun, atmosphere rim, re-entry plasma and impact flashes glow.
 ### `src/render/textures.js`
 ```js
 export function loadTextures(renderer, { quality, onProgress, basePath?, software? }) → Promise<Textures>
-// Textures: { earthDay, earthRelief, earthClouds, earthLights, moon, milkyWay,
-//             stars: ArrayBuffer|null } plus non-enumerable watch(key, fn) for
-// the progressive 4K upgrade.
+// Textures: { earthDay, earthRelief, earthClouds, earthLights, moon, moonNormal,
+//             milkyWay, stars: ArrayBuffer|null } plus non-enumerable
+// watch(key, fn) (called after each upgrade tier), quality, softwareGL.
 // onProgress(fraction 0..1, label). Uses THREE.LoadingManager.
 // Correct colorSpace (SRGB for albedo/lights/stars, NoColorSpace for data maps),
 // anisotropy = renderer.capabilities.getMaxAnisotropy() (≤ 8), mipmaps on.

@@ -361,21 +361,20 @@ async function gpuProbe(page) {
   });
 }
 
-// ------------------------------------------------------------------ bytes per quality (hardware path, from the texture manifest)
+// ------------------------------------------------------------------ bytes per quality (hardware path, from the texture manifest in src/render/textures.js)
 
 async function bytesPerQuality() {
+  const { manifest } = await import('../../src/render/textures.js');
   const size = async (p) => { try { return (await stat(join(ROOT, p))).size; } catch { return 0; } };
-  const tex = (f) => size(`assets/textures/${f}`);
-  const earth = ['earth_day', 'earth_relief', 'earth_clouds', 'earth_lights'];
+  const tex = (pattern, res) => size(`assets/textures/${pattern.replace('{res}', res)}`);
   const out = {};
   for (const q of ['low', 'medium', 'high']) {
-    let first = await size('assets/stars.bin');
-    for (const e of earth) first += await tex(`${e}_2048.jpg`);
-    first += await tex(q === 'low' ? 'moon_1024.jpg' : 'moon_2048.jpg');
-    first += await tex('milkyway_1024.jpg');
-    const up = { low: [], medium: ['earth_day', 'earth_clouds'], high: earth }[q];
-    let later = 0;
-    for (const e of up) later += await tex(`${e}_4096.jpg`);
+    // desktop GPU: the 8K tier is allowed (fine pointer, max texture size ≥ 8192)
+    let first = await size('assets/stars.bin'), later = 0;
+    for (const [pattern, , , , start, tiers] of Object.values(manifest(q, true))) {
+      first += await tex(pattern, start);
+      for (const r of tiers) later += await tex(pattern, r);
+    }
     out[q] = { textures: first, upgrade: later };
   }
   return out;

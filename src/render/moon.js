@@ -1,6 +1,13 @@
-// Moon: Hapke-like regolith shading (Lommel–Seeliger, so the full Moon looks
-// flat like the real one, plus an opposition surge), relief from the albedo's
-// high-pass, earthshine scaled by the Earth's phase, tidally locked.
+// Moon: LRO LROC albedo + LOLA relief (real tangent-space normals), Hapke-like
+// regolith photometry, earthshine scaled by the Earth's phase, tidally locked.
+//
+// Photometry: Lunar-Lambert, a phase-dependent blend of Lommel–Seeliger
+// 2μ0/(μ0+μ) and Lambert μ0, with both cosines taken on the relief normal.
+// Near full Moon it is pure Lommel–Seeliger: μ0 ≈ μ for every facet, so
+// relief vanishes and the disc looks flat, as it really does; at larger
+// phase the Lambert share grows and craters stand out towards the
+// terminator. A Hapke-style shadow-hiding opposition surge brightens the
+// disc near full.
 import {
   Group, Mesh, SphereGeometry, ShaderMaterial, Vector3, Matrix4,
 } from 'three';
@@ -31,9 +38,11 @@ void main() {
 
 const FRAG = /* glsl */`
 uniform sampler2D map;
+uniform sampler2D normalMap;
 uniform vec3 sunDir;
 uniform vec3 earthDir;
 uniform float earthLit;   // illuminated fraction of the Earth seen from the Moon
+uniform float exposure;
 uniform vec3 tint;
 #include <common>
 #include <logdepthbuf_pars_fragment>
@@ -44,51 +53,55 @@ varying vec3 vWorldPos;
 void main() {
   #include <logdepthbuf_fragment>
   vec3 N = normalize(vN);
-  vec3 T = normalize(vT - N * dot(N, vT));
-  vec3 B = cross(N, T);
-  vec2 ts = vec2(textureSize(map, 0));
-  vec2 o = 1.0 / ts;
-  float a0 = texture2D(map, vUv).g;
-  // Height from the albedo's high-pass (albedo minus a blurred mip): crater
-  // rims and rays give relief, the broad maria/highland contrast does not.
-  float hx = (texture2D(map, vUv + vec2(o.x, 0.0)).g - texture2D(map, vUv - vec2(o.x, 0.0)).g)
-           - (textureLod(map, vUv + vec2(o.x * 8.0, 0.0), 3.0).g - textureLod(map, vUv - vec2(o.x * 8.0, 0.0), 3.0).g) * 0.125;
-  float hy = (texture2D(map, vUv + vec2(0.0, o.y)).g - texture2D(map, vUv - vec2(0.0, o.y)).g)
-           - (textureLod(map, vUv + vec2(0.0, o.y * 8.0), 3.0).g - textureLod(map, vUv - vec2(0.0, o.y * 8.0), 3.0).g) * 0.125;
-  vec3 Nb = normalize(N - (T * hx + B * hy) * (2.4 * ts.x / 2048.0));
+  vec3 T = normalize(vT - N * dot(N, vT));   // east
+  vec3 B = cross(N, T);                       // north
+  // LOLA relief: x = east, y = north (3× exaggerated in the map, scaled to ≈2×
+  // here: at 3× low-sun slopes turned away from the Sun read as black blobs)
+  vec3 tn = texture2D(normalMap, vUv).xyz * 2.0 - 1.0;
+  vec3 Nb = normalize((T * tn.x + B * tn.y) * 0.7 + N * max(tn.z, 0.05));
 
   vec3 L = sunDir;
   vec3 V = normalize(cameraPosition - vWorldPos);
-  float mu0 = max(dot(Nb, L), 0.0);
-  float mu = max(dot(N, V), 0.1); // geometric: keeps the limb from spiking
-  // Hapke-like regolith: Lommel–Seeliger (flat full Moon, no limb darkening)
-  // blended with a little Lambert for relief, opposition surge near g = 0.
-  float g = acos(clamp(dot(L, V), -1.0, 1.0));     // phase angle
-  float ls = 2.0 * mu0 / (mu0 + mu);
-  float surge = 1.0 + 0.55 / (1.0 + tan(0.5 * g) / 0.06);
-  float lit = mix(mu0, min(ls, 1.6), 0.7) * surge;
-  lit *= smoothstep(-0.015, 0.03, dot(N, L));      // sharp, anti-aliased terminator
+  float muG = dot(N, L);
+  // Soft clamp of the facet cosine: a normal map has no cast shadows, so a
+  // hard max(·, 0) cuts facets just past grazing into sharp black slivers.
+  float c = dot(Nb, L);
+  float mu0 = c > 0.1 ? c : 0.1 * exp(c / 0.1 - 1.0) * smoothstep(-0.25, 0.0, c);
+  float mu = max(dot(Nb, V), 0.05);
+  float g = acos(clamp(dot(L, V), -1.0, 1.0));            // phase angle
+  // Lunar-Lambert (McEwen 1991): Lommel–Seeliger near full Moon (flat disc),
+  // tending to Lambert at large phase, where relief and crater walls read.
+  float wLS = clamp(1.0 - g / 2.0, 0.2, 1.0);
+  float ls = mix(mu0, 2.0 * mu0 / (mu0 + mu), wLS);
+  float surge = 1.0 + 0.4 / (1.0 + tan(0.5 * g) / 0.08);   // opposition (shadow hiding)
+  float lit = ls * surge;
+  lit *= smoothstep(-0.03, 0.02, muG);                     // relief may catch light just past the terminator
 
-  vec3 albedo = pow(vec3(a0), vec3(1.12)) * tint;
-  vec3 color = albedo * lit * 1.35;
-  // Earthshine: sunlight reflected by the Earth lights the night side faintly
-  float es = max(dot(Nb, earthDir), 0.0) * (1.0 - smoothstep(-0.08, 0.06, dot(N, L)));
-  color += albedo * vec3(0.55, 0.65, 0.85) * (0.025 * earthLit * es);
+  // LROC map is stretched for display; γ 0.8 brings maria/highland reflectance
+  // back to the real ≈ 0.6 ratio after tone mapping.
+  vec3 albedo = pow(texture2D(map, vUv).ggg, vec3(0.8)) * tint;
+  vec3 color = albedo * lit * exposure;
+  // Earthshine: sunlight reflected by the Earth (albedo ≈ 0.3), lifted for
+  // display so the night side reads faintly against space.
+  float es = max(dot(Nb, earthDir), 0.0) * (1.0 - smoothstep(-0.06, 0.04, muG));
+  color += albedo * vec3(0.6, 0.72, 0.95) * (0.15 * pow(earthLit, 1.5) * es); // ∝ Earth's phase (≈ phase-law of a lit sphere)
 
   gl_FragColor = vec4(color, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
 
-export function createMoon(textures, { quality = 'high' } = {}) {
+export function createMoon(textures, { quality = textures.quality || 'high' } = {}) {
   const group = new Group();
   group.name = 'Moon';
-  const seg = quality === 'low' ? [48, 24] : [96, 48];
+  const seg = quality === 'low' ? [64, 32] : [128, 64];
   const sunDir = new Vector3(1, 0, 0);
   const earthDir = new Vector3(-1, 0, 0);
   const mat = new ShaderMaterial({
     uniforms: {
       map: { value: textures.moon },
+      normalMap: { value: textures.moonNormal },
+      exposure: { value: 1.25 },
       sunDir: { value: sunDir },
       earthDir: { value: earthDir },
       earthLit: { value: 0.5 },
@@ -97,6 +110,10 @@ export function createMoon(textures, { quality = 'high' } = {}) {
     vertexShader: VERT,
     fragmentShader: FRAG,
   });
+  if (textures.watch) {
+    textures.watch('moon', (t) => { mat.uniforms.map.value = t; });
+    textures.watch('moonNormal', (t) => { mat.uniforms.normalMap.value = t; });
+  }
   const surface = new Mesh(new SphereGeometry(MOON_RADIUS, seg[0], seg[1]), mat);
   surface.name = 'MoonSurface';
   group.add(surface);

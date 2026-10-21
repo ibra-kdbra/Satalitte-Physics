@@ -1,26 +1,36 @@
 // Texture + star-catalogue loading with progress, correct colour spaces, safe
-// fallbacks and progressive upgrade (2K first, 4K swapped in after start-up).
+// fallbacks and progressive upgrade tiers.
 //
-// Download budget (see docs/CREDITS.md for sources):
-//   low    ≈ 1.8 MB  (2K Earth maps, 1K Moon)
-//   medium ≈ 5.0 MB  (2.45 MB to first frame, then Earth day + clouds at 4K)
-//   high   ≈ 6.7 MB  (2.45 MB to first frame, then all four Earth maps at 4K)
+// Every map starts at the size needed for the first frame; larger tiers are
+// fetched after start-up, decoded off the frame, uploaded to the GPU in an idle
+// period and only then swapped in (one tier at a time, so no frame pays for
+// two big uploads). Tiers per quality:
+//   low    : 2K Earth, 1K Moon + relief, 1K Milky Way, no upgrades
+//   medium : 2K Earth → 4K day + clouds; 2K Moon, 1K → 2K Moon relief; 2K Milky Way
+//   high   : 2K Earth → 4K day, relief, clouds, lights → 8K day + lights
+//            (8K only with maxTextureSize ≥ 8192, a fine pointer and a GPU);
+//            2K Moon → 4K Moon, 1K → 2K Moon relief
+// Software GL (no GPU) never upgrades. Download sizes: see docs/CREDITS.md.
 import {
   LoadingManager, TextureLoader, FileLoader, DataTexture, RGBAFormat, SRGBColorSpace, NoColorSpace,
   LinearMipmapLinearFilter, LinearFilter, RepeatWrapping, ClampToEdgeWrapping,
 } from 'three';
 import { isSoftwareRenderer } from './renderer.js';
 
-// key → [file (with {res} placeholder), colour space, fallback RGBA, label, 4K upgrade on]
-function manifest(quality) {
-  const moon = quality === 'low' ? 'moon_1024.jpg' : 'moon_2048.jpg';
+// key → [file ({res} placeholder), colour space, fallback RGBA, label, start res, upgrade tiers]
+export function manifest(quality, allow8k) {
+  const low = quality === 'low', high = quality === 'high';
+  const up = (tiers) => (low ? [] : tiers);
   return {
-    earthDay: ['earth_day_{res}.jpg', SRGBColorSpace, [30, 60, 110, 255], 'Earth surface', ['high', 'medium']],
-    earthRelief: ['earth_relief_{res}.jpg', NoColorSpace, [0, 0, 0, 255], 'Earth relief', ['high']],
-    earthClouds: ['earth_clouds_{res}.jpg', NoColorSpace, [0, 0, 0, 255], 'Clouds', ['high', 'medium']],
-    earthLights: ['earth_lights_{res}.jpg', SRGBColorSpace, [0, 0, 0, 255], 'City lights', ['high']],
-    moon: [moon, SRGBColorSpace, [150, 150, 150, 255], 'Moon', []],
-    milkyWay: ['milkyway_1024.jpg', SRGBColorSpace, [0, 0, 0, 255], 'Milky Way', []],
+    earthDay: ['earth_day_{res}.jpg', SRGBColorSpace, [30, 60, 110, 255], 'Earth surface', 2048,
+      up(high ? (allow8k ? [4096, 8192] : [4096]) : [4096])],
+    earthRelief: ['earth_relief_{res}.jpg', NoColorSpace, [0, 0, 0, 255], 'Earth relief', 2048, high ? [4096] : []],
+    earthClouds: ['earth_clouds_{res}.jpg', NoColorSpace, [0, 0, 0, 255], 'Clouds', 2048, up([4096])],
+    earthLights: ['earth_lights_{res}.jpg', SRGBColorSpace, [0, 0, 0, 255], 'City lights', 2048,
+      high ? (allow8k ? [4096, 8192] : [4096]) : []],
+    moon: ['moon_{res}.jpg', SRGBColorSpace, [150, 150, 150, 255], 'Moon', low ? 1024 : 2048, high ? [4096] : []],
+    moonNormal: ['moon_normal_{res}.jpg', NoColorSpace, [128, 128, 255, 255], 'Moon relief', 1024, up([2048])],
+    milkyWay: ['milkyway_{res}.jpg', SRGBColorSpace, [0, 0, 0, 255], 'Milky Way', low ? 1024 : 2048, []],
   };
 }
 
@@ -34,18 +44,25 @@ function fallbackTexture(rgba, colorSpace) {
 
 /**
  * Loads every texture (and the star catalogue) the render modules need.
- * Resolves with { earthDay, earthRelief, earthClouds, earthLights, moon, milkyWay,
- * stars: ArrayBuffer|null, watch(key, fn) }. `watch` lets a module follow the
- * later 4K upgrade of a texture: fn(newTexture) is called once it is ready
- * (the old texture is disposed right after).
+ * Resolves with { earthDay, earthRelief, earthClouds, earthLights, moon, moonNormal,
+ * milkyWay, stars: ArrayBuffer|null } plus non-enumerable helpers:
+ *   watch(key, fn)  fn(newTexture) after each upgrade tier is uploaded (the
+ *                   previous texture is disposed right after)
+ *   quality, softwareGL
  */
-export function loadTextures(renderer, { quality = 'high', onProgress, basePath = './assets/textures/', upgradeDelayMs = 1500, software = 'auto' } = {}) {
+export function loadTextures(renderer, {
+  quality = 'high', onProgress, basePath = './assets/textures/', upgradeDelayMs = 1500, software = 'auto',
+} = {}) {
+  const softwareGL = software === 'auto' ? isSoftwareRenderer(renderer.getContext()) : !!software;
+  const coarse = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
+  const allow8k = !softwareGL && !coarse && renderer.capabilities.maxTextureSize >= 8192;
   const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   const aniso = quality === 'low' ? Math.min(4, maxAniso) : maxAniso;
-  const files = manifest(quality);
+  const files = manifest(quality, allow8k);
   const keys = Object.keys(files);
+  const urlOf = (key, res) => basePath + files[key][0].replace('{res}', String(res));
   const labels = {};
-  for (const k of keys) labels[basePath + files[k][0].replace('{res}', '2048')] = files[k][3];
+  for (const k of keys) labels[urlOf(k, files[k][4])] = files[k][3];
   const starsUrl = basePath.replace(/textures\/?$/, '') + 'stars.bin';
   labels[starsUrl] = 'Stars';
 
@@ -68,16 +85,16 @@ export function loadTextures(renderer, { quality = 'high', onProgress, basePath 
     return tex;
   };
 
-  const loadOne = (key, res, mgrLoader) => new Promise((resolve) => {
-    const [file, colorSpace, fallback] = files[key];
-    const url = basePath + file.replace('{res}', String(res));
+  const loadOne = (key, res, mgrLoader, first) => new Promise((resolve) => {
+    const [, colorSpace, fallback] = files[key];
+    const url = urlOf(key, res);
     mgrLoader.load(url, (tex) => resolve(setup(tex, key)), undefined, () => {
       console.warn(`[textures] failed to load ${url}, using fallback`);
-      resolve(res === 2048 ? fallbackTexture(fallback, colorSpace) : null);
+      resolve(first ? fallbackTexture(fallback, colorSpace) : null);
     });
   });
 
-  const jobs = keys.map((key) => loadOne(key, 2048, loader).then((t) => [key, t]));
+  const jobs = keys.map((key) => loadOne(key, files[key][4], loader, true).then((t) => [key, t]));
   jobs.push(new Promise((resolve) => {
     new FileLoader(manager).setResponseType('arraybuffer').load(starsUrl, (buf) => resolve(['stars', buf]), undefined, () => {
       console.warn('[textures] failed to load the star catalogue');
@@ -89,32 +106,44 @@ export function loadTextures(renderer, { quality = 'high', onProgress, basePath 
     if (onProgress) onProgress(1, 'Ready');
     const textures = Object.fromEntries(pairs);
     const watchers = {};
-    Object.defineProperty(textures, 'watch', {
-      enumerable: false,
-      value(key, fn) { (watchers[key] ||= []).push(fn); },
-    });
-    // Device hint for the other render modules (read by createEarth).
-    const softwareGL = software === 'auto' ? isSoftwareRenderer(renderer.getContext()) : !!software;
-    Object.defineProperty(textures, 'softwareGL', { enumerable: false, value: softwareGL });
-    // Progressive upgrade: fetch the 4K maps once the scene is up.
-    // (skipped on software GL: 4K mip generation on the CPU costs seconds and buys nothing)
-    const upgrades = softwareGL ? [] : keys.filter((k) => files[k][4].includes(quality) && !textures[k].userData.fallback);
-    if (upgrades.length) {
-      setTimeout(() => {
-        const plain = new TextureLoader();
-        for (const key of upgrades) {
-          loadOne(key, 4096, plain).then((tex) => {
-            if (!tex) return;
-            const old = textures[key];
-            textures[key] = tex;
-            for (const fn of watchers[key] || []) fn(tex);
-            old.dispose();
-          });
-        }
-      }, upgradeDelayMs);
+    const hidden = (k, value) => Object.defineProperty(textures, k, { enumerable: false, value });
+    hidden('watch', (key, fn) => { (watchers[key] ||= []).push(fn); });
+    hidden('softwareGL', softwareGL);
+    hidden('quality', quality);
+    if (!softwareGL) {
+      setTimeout(() => runUpgrades(renderer, textures, files, watchers, (k, r) => loadOne(k, r, new TextureLoader(), false)), upgradeDelayMs);
     }
     return textures;
   });
+}
+
+/** Wait for an idle moment (or the next frame boundary where idle callbacks are missing). */
+function idle() {
+  return new Promise((resolve) => {
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => resolve(), { timeout: 500 });
+    else setTimeout(resolve, 16);
+  });
+}
+
+// Tier by tier (all 4K maps, then the 8K maps), one texture at a time:
+// download, upload to the GPU during idle time (initTexture: the swap itself
+// costs nothing at draw time), notify the materials, free the old texture.
+async function runUpgrades(renderer, textures, files, watchers, load) {
+  const tiers = new Set();
+  for (const k of Object.keys(files)) for (const r of files[k][5]) tiers.add(r);
+  for (const res of [...tiers].sort((a, b) => a - b)) {
+    const keys = Object.keys(files).filter((k) => files[k][5].includes(res) && !textures[k].userData.fallback);
+    const loaded = await Promise.all(keys.map((k) => load(k, res).then((t) => [k, t])));
+    for (const [key, tex] of loaded) {
+      if (!tex) continue;
+      await idle();
+      try { renderer.initTexture(tex); } catch { /* uploaded on first use instead */ }
+      const old = textures[key];
+      textures[key] = tex;
+      for (const fn of watchers[key] || []) fn(tex);
+      old.dispose();
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
