@@ -1,4 +1,4 @@
-// Satalitte Physics v2 — bootstrap, game loop and glue between the physics
+// Satalitte Physics v2: bootstrap, game loop and glue between the physics
 // simulation (src/physics), the renderer (src/render), the HUD (src/ui), the
 // camera rig and input. See docs/ARCHITECTURE.md for the module contracts.
 
@@ -562,7 +562,7 @@ function handleEvents(events) {
       sim.remove(ev.id);
       removeEntity(ev.id);
     } else if (ev.type === 'fuelOut') {
-      hud.toast?.(`${ev.name}: propellant depleted — engine shut down.`, 'warn');
+      hud.toast?.(`${ev.name}: propellant depleted, engine shut down.`, 'warn');
     } else if (ev.type === 'burn') {
       hud.toast?.(`${ev.name}: ${ev.label} (Δv ${Math.round(ev.dvMs)} m/s).`, 'success');
     }

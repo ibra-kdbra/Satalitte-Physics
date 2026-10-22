@@ -1008,7 +1008,7 @@ define('UI', async () => {
         const canv = [...pane.querySelectorAll('canvas')].map((c) => [c.width, c.height]);
         return { name, cells, canv, text: pane.innerText };
       }, tab);
-      if (tab !== 'Instruments') assert(st.cells.length >= 8 && st.cells.every((c) => c && c !== '—' && /\d/.test(c)), `${tab} cells: ${st.cells.join(' | ')}`);
+      if (tab !== 'Instruments') assert(st.cells.length >= 8 && st.cells.every((c) => c && c !== '–' && /\d/.test(c)), `${tab} cells: ${st.cells.join(' | ')}`);
       else assert(st.canv.length === 3 && st.canv.every(([w, h]) => w > 0 && h > 0) && /\d/.test(st.text), `canvases ${JSON.stringify(st.canv)}`);
       out.push(`${tab}: ${tab === 'Instruments' ? st.canv.map((c) => c.join('×')).join(',') : st.cells.slice(0, 3).join(' / ')}`);
     }

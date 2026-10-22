@@ -508,7 +508,7 @@
   </div>
 
   <!-- Alert Notification Banner -->
-  <div id="alert-banner">WARNING: LOW PERIGEE — ATMOSPHERIC ENTRY IMMINENT</div>
+  <div id="alert-banner">WARNING: LOW PERIGEE, ATMOSPHERIC ENTRY IMMINENT</div>
 
   <!-- Top Mission Control Bar -->
   <header id="top-bar">
@@ -1708,7 +1708,7 @@
         statusPill.style.color = '#ef4444';
       } else if (peKm < 160) {
         alertBanner.style.display = 'block';
-        alertBanner.textContent = `WARNING: PERIGEE AT ${peKm.toFixed(0)} KM — RAPID ORBITAL DECAY`;
+        alertBanner.textContent = `WARNING: PERIGEE AT ${peKm.toFixed(0)} KM, RAPID ORBITAL DECAY`;
         statusPill.textContent = 'DECAYTRAJ';
         statusPill.style.color = '#f59e0b';
       } else {

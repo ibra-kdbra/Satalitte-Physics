@@ -45,17 +45,39 @@ links. Verified against the Vallado SGP4 test case; a cloned satellite tracks
 SGP4 within 0.13 km over one orbit. Still open: pass-over-my-location (moved
 to Phase 3 with ground stations).
 
-- Data: CelesTrak GP data (free, public, OMM/JSON format). A scheduled GitHub
-  Action fetches a few catalogs (space stations, GPS, geostationary, a
-  bright-satellite list, optionally Starlink) a few times a day and commits
-  them to `data/`, so GitHub Pages serves them with no CORS issues and
-  CelesTrak is not hit by every visitor.
+- Data: CelesTrak GP data (free, public, OMM/JSON format). The Pages
+  deployment fetches the catalogs (stations, bright satellites, science,
+  weather, GPS, Galileo, geostationary, Starlink) every 6 hours and publishes
+  them with the site, so CelesTrak is not hit by every visitor and nothing is
+  committed to the repository.
 - Propagation: SGP4 via `satellite.js` (MIT), the standard model that matches
   the published element sets.
 - UI: catalog toggle, search by name or NORAD id, "where is the ISS now",
   pass-over-my-location (browser geolocation, opt-in).
 - "Clone into the sandbox": copy a real satellite's current state into the
   numerical simulation and fly it with your own engine.
+
+## Graphics and performance (done)
+
+Delivered: NASA textures (Blue Marble NG, Black Marble 2016, GEBCO relief, LRO
+LROC Moon with LOLA relief, Deep Star Maps Milky Way, Hipparcos stars),
+physically based atmosphere, Lunar-Lambert Moon, re-entry and impact effects;
+progressive texture tiers with KTX2 GPU compression for the large colour maps,
+an on-demand 4K Moon relief, render on demand, adaptive resolution, an offline
+cache (service worker); GPU timing in `?perf=1`; graceful handling of shader
+failures and lost WebGL contexts; a GPU check page
+(`tests/visual/gpu-check.html`), which found and fixed a NaN in the atmosphere
+on NVIDIA's Linux driver.
+
+Next, when wanted:
+
+- **Streamed close-up imagery:** map tiles for the area under the camera
+  (NASA GIBS, down to 250 m) instead of one global texture, for sharp views
+  from low orbit.
+- **Today's clouds:** the daily global cloud mosaic from NASA GIBS instead of
+  a fixed cloud map.
+- **Device matrix:** GPU time and frame rate recorded on a few real phones,
+  laptops and desktops for each release.
 
 ## Phase 3: Engineering features
 

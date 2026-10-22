@@ -290,7 +290,7 @@ async function withSession(browser, port, s) {
       // ERR_ABORTED on three's fetch-based loads (FileLoader: stars.bin, .ktx2 and the Basis
       // transcoder) is reported intermittently by the headless browser although the data
       // arrives (checked: all stars present; KTX2 by 'colour-map upgrades are KTX2' and a
-      // direct request trace) — reported as INFO, not as a failure.
+      // direct request trace): reported as INFO, not as a failure.
       const benign = msgs.filter((m) => (/ERR_ABORTED\] \S*\/stars\.bin/.test(m) && h.stars >= 25000)
         || /ERR_ABORTED\] \S*(\.ktx2|\/basis_transcoder\.(js|wasm)) \(fetch/.test(m));
       env.push(...benign);
@@ -1541,7 +1541,7 @@ async function main() {
   // console matrix
   let fails = 0;
   for (const r of results) {
-    console.log(`\n${r.id} — ${r.title}`);
+    console.log(`\n${r.id}: ${r.title}`);
     for (const x of r.checks) {
       if (x.status === 'FAIL') fails++;
       console.log(`  ${x.status.padEnd(4)} ${x.name}: ${typeof x.value === 'string' ? x.value : JSON.stringify(x.value)}${x.expect ? `  [expect ${x.expect}]` : ''}`);

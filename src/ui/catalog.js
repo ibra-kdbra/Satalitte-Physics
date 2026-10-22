@@ -10,7 +10,7 @@ const MAX_RESULTS = 8;
 /** "just now", "12 min", "3 h", "4 d" for a duration in seconds (sign ignored). */
 export function fmtAge(seconds) {
   const s = Math.abs(seconds);
-  if (!Number.isFinite(s)) return '—';
+  if (!Number.isFinite(s)) return '–';
   if (s < 90) return 'just now';
   if (s < 3600) return `${Math.round(s / 60)} min`;
   if (s < 48 * 3600) return `${Math.round(s / 3600)} h`;

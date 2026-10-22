@@ -19,7 +19,7 @@ rebuilds them from the original downloads).
 Processing:
 - Day map: resampled from 21600 px. Over water, the deep ocean was darkened and its bathymetry shading flattened, so oceans look as they do in photos from orbit; shallow shelves are kept.
 - City lights: the dark ground of Black Marble was removed, keeping only the emitted light, as greyscale.
-- Relief map: R holds land elevation, G the water mask; saved at 4:4:4 so the channels stay separate.
+- Relief map: R holds land elevation, slightly smoothed (about 10 km) to remove the terracing of the 8-bit source; G holds the water mask; saved at 4:4:4 so the channels stay separate.
 - KTX2: the 4K and 8K colour maps are also shipped as Basis Universal ETC1S `.ktx2` files, encoded from the JPEGs by `scripts/build-ktx2.mjs` (same images, GPU-compressed format).
 - Every new map was checked against the previous one by correlation (also against mirrored and shifted versions) to rule out a flipped or shifted projection.
 

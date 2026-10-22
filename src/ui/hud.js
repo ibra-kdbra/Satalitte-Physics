@@ -280,7 +280,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   const stats = {};
   const statGrid = h('dl', { class: 'stats' });
   for (const [key, label, tip] of statDefs) {
-    const v = textSlot('—');
+    const v = textSlot('–');
     const u = textSlot('');
     const wrap = h('div', { class: 'stat', title: tip },
       h('dt', { class: 'stat__label', text: label }),
@@ -331,7 +331,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     const slots = {};
     const tbody = h('tbody');
     for (const [key, label, tip] of defs) {
-      const s = textSlot('—');
+      const s = textSlot('–');
       const tr = h('tr', { title: tip || null }, h('th', { scope: 'row', text: label }), h('td', { class: 'num' }, s.node));
       slots[key] = { slot: s, tr };
       tbody.append(tr);
@@ -362,9 +362,9 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
   tabPanes.env.append(env.el);
 
   const navCanvas = h('canvas', { class: 'navball', role: 'img', 'aria-label': 'Navball: the horizon tilts with the flight-path angle; the dot on the rim shows the true anomaly, periapsis at the top' });
-  const fpaSlot = textSlot('—');
-  const nuSlot = textSlot('—');
-  const latlonSlot = textSlot('—');
+  const fpaSlot = textSlot('–');
+  const nuSlot = textSlot('–');
+  const latlonSlot = textSlot('–');
   const gtCanvas = h('canvas', { class: 'gt-canvas', role: 'img', 'aria-label': 'Ground track: the path below the spacecraft on a world map' });
   const chartCanvas = h('canvas', { class: 'chart-canvas', role: 'img', 'aria-label': 'Altitude (solid line) and speed (dashed line) history' });
   tabPanes.instruments.append(
@@ -465,8 +465,8 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
     hohmann: apBtn('hohmann', 'Transfer to target', apHelp.hohmann),
     refuel: apBtn('refuel', 'Refuel', apHelp.refuel),
   };
-  const fuelSlot = textSlot('—');
-  const dvSlot = textSlot('—');
+  const fuelSlot = textSlot('–');
+  const dvSlot = textSlot('–');
   const dvUsedSlot = textSlot(fmtDeltaV(0));
   const fuelFill = h('span', { class: 'meter__fill' });
   const fuelTrack = h('div', { class: 'meter__track', role: 'meter', 'aria-label': 'Propellant remaining', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, fuelFill);
@@ -951,7 +951,7 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
       selEmpty.hidden = show;
       if (!show) {
         lastIdKind = '';
-        latlonSlot.set('—');
+        latlonSlot.set('–');
         navUpdate({ active: false });
       }
     }
@@ -1078,8 +1078,8 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
       env.slots.latlon.slot.set(ll);
     }
 
-    fpaSlot.set(fixed ? '—' : fmtSignedAngle(t.flightPathAngleDeg, 1));
-    nuSlot.set(fixed ? '—' : fmtAngle(t.trueAnomalyDeg, 1));
+    fpaSlot.set(fixed ? '–' : fmtSignedAngle(t.flightPathAngleDeg, 1));
+    nuSlot.set(fixed ? '–' : fmtAngle(t.trueAnomalyDeg, 1));
     navUpdate({ fpaDeg: t.flightPathAngleDeg, nuDeg: t.trueAnomalyDeg, active: !fixed && t.status !== 'impacted' });
 
     if (state.canFly) {
@@ -1092,8 +1092,8 @@ export function createHUD(root, handlers = {}, { settings, presets = [], warpSte
           fuelWrap.dataset.level = pct < 0.05 ? 'danger' : pct < 0.2 ? 'warn' : 'ok';
           setAttr(fuelTrack, 'aria-valuenow', Math.round(pct * 100));
         }
-      } else fuelSlot.set('—');
-      dvSlot.set(Number.isFinite(t.dvRemainingMs) ? `${fmtNumber(t.dvRemainingMs)} m/s` : '—');
+      } else fuelSlot.set('–');
+      dvSlot.set(Number.isFinite(t.dvRemainingMs) ? `${fmtNumber(t.dvRemainingMs)} m/s` : '–');
       if (Number.isFinite(t.deltaVUsedMs)) dvUsedSlot.set(fmtDeltaV(t.deltaVUsedMs));
       if (t.thrustN !== lastThrustN && !(Number.isNaN(t.thrustN) && Number.isNaN(lastThrustN))) {
         lastThrustN = Number(t.thrustN);

@@ -10,7 +10,7 @@
 //
 // Usage: node scripts/fetch-satellites.mjs [--fallback https://<user>.github.io/<repo>/data/satellites/]
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compactOmm } from '../src/catalog/sgp4.js';
@@ -90,8 +90,18 @@ for (const g of GROUPS) {
     console.log(`${g.id}: ${records.length} objects`);
   } catch (err) {
     failures++;
-    console.warn(`${g.id}: kept previous data (${err.message})`);
-    if (prev && await restore(prev)) manifest.groups.push(prev);
+    // Previous copy: from the manifest (local or deployed), else a local file
+    // without a manifest entry (e.g. after the placeholder index was restored).
+    let kept = prev && await restore(prev) ? prev : null;
+    if (!kept && existsSync(join(out, file))) {
+      try {
+        const records = JSON.parse(readFileSync(join(out, file), 'utf8'));
+        const fetched = statSync(join(out, file)).mtime.toISOString();
+        kept = { id: g.id, name: g.name, default: g.default, file, count: records.length, fetched };
+      } catch { /* unreadable: drop the group */ }
+    }
+    if (kept) manifest.groups.push(kept);
+    console.warn(`${g.id}: ${kept ? `kept previous data from ${kept.fetched}` : 'no previous data, group left out'} (${err.message.split('\n')[0]})`);
   }
 }
 

@@ -264,7 +264,7 @@ void main() {
   color += albedo * RECIPROCAL_PI * E * (0.35 * graze) * shadow;
   // Skylight (stands in for multiple scattering): blue by day; with the Sun
   // low, the sky that lights the ground is itself lit through a long air path,
-  // so it turns warm and weak — the terminator band on bare ground is warm too.
+  // so it turns warm and weak; the terminator band on bare ground is warm too.
   float dayAmt = smoothstep(-0.1, 0.35, mu);
   vec3 skyCol = mix(vec3(0.85, 0.5, 0.33), vec3(0.32, 0.48, 0.85), smoothstep(0.03, 0.4, mu));
   vec3 sky = skyCol * (0.10 * sunE) * dayAmt * dayAmt;
@@ -521,7 +521,7 @@ export function createEarth(textures, { quality = 'high' } = {}) {
       cloudShift: { value: 0 },
       cloudsOn: { value: 1 },
       cityLights: { value: 1 },
-      bumpScale: { value: 4.4 }, // GEBCO elevation map (scripts/build-hires-textures.py)
+      bumpScale: { value: 3.6 }, // GEBCO elevation map (scripts/build-hires-textures.py)
       debugView: { value: 0 },
     },
     defines: { ATMO_STEPS: steps.surface, ...apDefines, ...(apDefines.AP_VERTEX === '' ? { SHADOW_VERTEX: '' } : {}) },

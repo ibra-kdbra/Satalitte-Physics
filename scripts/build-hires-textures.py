@@ -116,7 +116,10 @@ def water_mask(src, size):
 def build_relief(src):
     elev = Image.open(os.path.join(src, 'gebco_elev_21600.png')).convert('L')
     for w in (4096, 2048):
-        e = elev.resize((w, w // 2), Image.LANCZOS)
+        # The source has 256 elevation levels: gentle slopes are terraces whose
+        # edges the bump shading turns into blobs. A slight blur (≈ 10 km)
+        # removes the terracing; the relief itself is far larger.
+        e = elev.resize((w, w // 2), Image.LANCZOS).filter(ImageFilter.GaussianBlur(1.2 * w / 4096))
         if w == 4096:
             check_alignment(e, 'earth_relief_4096.jpg', 'earth relief', min_corr=0.8, channel='R')
         water = water_mask(src, (w, w // 2))
