@@ -50,7 +50,7 @@ if (process.env.BLOCK || process.env.DELAY_MS) {
     return route.continue();
   });
 }
-await pg.goto(`http://localhost:${port}${base}${page}`);
+await pg.goto(`http://localhost:${port}${base}${page}`, { waitUntil: 'domcontentloaded' });
 await pg.waitForTimeout(+wait);
 // Optional scripted scenario: ACT runs in the page, then the tool waits ACT_WAIT ms more.
 if (process.env.ACT) {

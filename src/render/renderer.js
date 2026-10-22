@@ -182,11 +182,19 @@ export function createRenderer(container, { quality = 'high', software = 'auto' 
   };
 }
 
-/** The GPU's name as the browser reports it (Chrome masks RENDERER behind the debug extension). */
+/**
+ * The GPU's name. RENDERER first: Firefox reports the real (rounded) name there
+ * and deprecates the debug extension; Chrome masks it as "WebKit WebGL" and
+ * keeps the real name behind WEBGL_debug_renderer_info.
+ */
 export function gpuName(gl) {
   try {
-    const ext = gl.getExtension('WEBGL_debug_renderer_info');
-    return String((ext && gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) || gl.getParameter(gl.RENDERER) || 'unknown GPU');
+    let name = String(gl.getParameter(gl.RENDERER) || '');
+    if (!name || /^webkit webgl$/i.test(name)) {
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      if (ext) name = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || name);
+    }
+    return name || 'unknown GPU';
   } catch {
     return 'unknown GPU';
   }
@@ -194,14 +202,5 @@ export function gpuName(gl) {
 
 /** True on software rasterisers (SwiftShader, llvmpipe): no GPU, so keep every cost minimal. */
 export function isSoftwareRenderer(gl) {
-  try {
-    let name = String(gl.getParameter(gl.RENDERER) || '');
-    if (/^webkit webgl$/i.test(name)) { // Chrome masks RENDERER; the debug extension has the real name
-      const ext = gl.getExtension('WEBGL_debug_renderer_info');
-      if (ext) name = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '');
-    }
-    return /swiftshader|llvmpipe|softpipe|software/i.test(name);
-  } catch {
-    return false;
-  }
+  return /swiftshader|llvmpipe|softpipe|software/i.test(gpuName(gl));
 }

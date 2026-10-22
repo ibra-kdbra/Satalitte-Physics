@@ -178,6 +178,7 @@ uniform float cloudShift;   // cloud texture u offset (drift)
 uniform float cloudsOn;
 uniform float cityLights;
 uniform float bumpScale;
+uniform float debugView;    // GPU diagnostics (tests/visual/gpu-check.html); 0 = normal
 #include <common>
 #include <logdepthbuf_pars_fragment>
 varying vec2 vUv;
@@ -312,8 +313,20 @@ void main() {
   color += vec3(1.0, 0.70, 0.38) * (lights * 2.4 * night * (1.0 - 0.8 * cover));
   color += albedo * 0.0012; // starlight/airglow floor: the night side is not pure black
 
+  vec3 lit = color;
   color = aerial(color, camRel, -V, dist);
   gl_FragColor = vec4(color, 1.0);
+  if (debugView > 0.5) {
+    // 1 day map · 2 lit, no aerial perspective · 3 sunlight at the ground ·
+    // 4 constant red · 5 magenta where the result is NaN/Inf, else grey
+    bool bad = any(isnan(color)) || any(isinf(color));
+    vec3 d = debugView < 1.5 ? texture2D(dayMap, vUv).rgb
+           : debugView < 2.5 ? lit
+           : debugView < 3.5 ? E / sunE
+           : debugView < 4.5 ? vec3(1.0, 0.0, 0.0)
+           : (bad ? vec3(1.0, 0.0, 1.0) : vec3(0.5));
+    gl_FragColor = vec4(d, 1.0);
+  }
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
@@ -508,6 +521,7 @@ export function createEarth(textures, { quality = 'high' } = {}) {
       cloudsOn: { value: 1 },
       cityLights: { value: 1 },
       bumpScale: { value: 2.2 },
+      debugView: { value: 0 },
     },
     defines: { ATMO_STEPS: steps.surface, ...apDefines, ...(apDefines.AP_VERTEX === '' ? { SHADOW_VERTEX: '' } : {}) },
     vertexShader: VERT_TANGENT,
