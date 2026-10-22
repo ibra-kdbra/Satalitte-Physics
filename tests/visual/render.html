@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Render module test</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font: 12px system-ui, sans-serif; }
+  #viewport { position: fixed; inset: 0; }
+  #info { position: fixed; left: 8px; bottom: 8px; color: #9ab; pointer-events: none; }
+  /* minimal copy of the label style (the real one lives in styles/main.css) */
+  .body-label { display: flex; align-items: center; gap: 5px; padding: 2px 7px 2px 5px; border-radius: 999px;
+    background: rgba(8, 14, 24, .6); color: #dde6f0; font-size: 11px; white-space: nowrap; pointer-events: none;
+    border: 1px solid rgba(255,255,255,.12); }
+  .body-label .dot { width: 7px; height: 7px; border-radius: 50%; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "../../vendor/three/build/three.module.min.js",
+  "three/addons/": "../../vendor/three/addons/"
+} }
+</script>
+</head>
+<body>
+<div id="viewport"></div>
+<div id="info">loading…</div>
+<script type="module">
+// Query params (all optional):
+//   cam=x,y,z  target=x,y,z  sun=x,y,z  rot=<earth rad>  q=high|medium|low  bloom=0|1
+//   t=<seconds>  freezes the animation at that time (deterministic screenshots)
+//   moonll=lat,lon,alt[,tilt] camera above a lunar feature
+//   moon=x,y,z   Moon position (e.g. 384,0,0 for the real distance)
+//   heat=0..1    re-entry heating on satellite #3       sel=0|1|2 selected satellite
+//   clean=1 hide overlays, fov=<deg> camera field of view
+//   follow=0|1|2 off=x,y,z  close-up camera on a satellite (offset: normal, radial, prograde)
+//   thrust=0 disables the prograde burn plume on #1
+//   flash=<age s> impact flash age in frozen mode      clouds/atmo/lights=0 to disable
+//   nanprobe=1   non-finite Earth/cloud/atmosphere pixels drawn magenta
+//   dbg=1..5     Earth surface debug view (1 day map, 2 lit without aerial perspective, 3 sunlight, 4 red, 5 NaN check)
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createRenderer } from '../../src/render/renderer.js';
+import { loadTextures } from '../../src/render/textures.js';
+import { createEarth } from '../../src/render/earth.js';
+import { createMoon } from '../../src/render/moon.js';
+import { createSky } from '../../src/render/sky.js';
+import { createSatelliteVisual, createImpactFlash } from '../../src/render/satellite.js';
+import { Trail } from '../../src/render/trail.js';
+import { OrbitLine } from '../../src/render/orbitLine.js';
+import { createLabel } from '../../src/render/labels.js';
+import { createLaunchPreview } from '../../src/render/launchPreview.js';
+import { createEquatorGrid } from '../../src/render/grid.js';
+
+const P = new URLSearchParams(location.search);
+const vec = (k, d) => (P.has(k) ? new THREE.Vector3(...P.get(k).split(',').map(Number)) : d);
+const num = (k, d) => (P.has(k) ? Number(P.get(k)) : d);
+const quality = P.get('q') || 'high';
+const frozen = P.has('t');
+const info = document.getElementById('info');
+
+// hw=1: use the GPU code paths even on a software rasteriser (for screenshots)
+const software = P.get('hw') === '1' ? false : 'auto';
+const view = createRenderer(document.getElementById('viewport'), { quality, software });
+if (P.has('bloom')) view.setBloom(P.get('bloom') === '1');
+// Inside tests/visual/gpu-check.html: report the GPU and any shader failure to the parent page.
+if (window.parent !== window) {
+  const post = (kind, detail = '') => window.parent.postMessage({ kind, detail, gpu: view.gpu, variant: location.search }, '*');
+  view.onIssue = post;
+  post('gpu');
+}
+const { scene, camera, renderer } = view;
+camera.position.copy(vec('cam', new THREE.Vector3(4, 7, 27)));
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.copy(vec('target', new THREE.Vector3(0, 0, 0)));
+controls.enableDamping = true;
+controls.minDistance = 0.001;
+controls.update();
+addEventListener('resize', () => view.setSize(innerWidth, innerHeight));
+
+const textures = await loadTextures(renderer, {
+  quality, software, basePath: '../../assets/textures/',
+  upgradeDelayMs: P.get('noup') === '1' ? 1e9 : 1500, // noup=1: keep the start-up tier (quick screenshots)
+  onProgress: (f, label) => { info.textContent = `loading ${Math.round(f * 100)}% ${label}`; },
+});
+
+const sunDir = vec('sun', new THREE.Vector3(1, 0.25, 0.55)).normalize();
+const settings = { clouds: P.get('clouds') !== '0', atmosphere: P.get('atmo') !== '0', cityLights: P.get('lights') !== '0' };
+
+const earth = createEarth(textures, { quality });
+// dbg=1..5: Earth surface debug views (see SURFACE_FRAG in src/render/earth.js)
+if (P.has('dbg')) earth.surface.material.uniforms.debugView.value = num('dbg', 0);
+// nanprobe=1: paint non-finite Earth surface / cloud / atmosphere pixels magenta
+if (P.get('nanprobe') === '1') {
+  for (const m of [earth.surface.material, earth.clouds.material, earth.atmosphere.material]) { m.defines.NAN_PROBE = ''; m.needsUpdate = true; }
+}
+scene.add(earth.group);
+const moon = createMoon(textures, { quality });
+scene.add(moon.group);
+const moonPos = vec('moon', new THREE.Vector3(-21, 5, -21)); // default ~30 units, not to scale; moon=x,y,z
+const sky = createSky(textures, scene);
+
+const moonLabel = createLabel('Moon', '#c8c8c8');
+moonLabel.position.set(0, 1.9, 0);
+moon.group.add(moonLabel);
+
+// Impact marker on Earth (lat 20°N, lon 10°E, Earth-fixed frame), one on the Moon near side
+const ll = (lat, lon) => new THREE.Vector3(
+  Math.cos(lat * Math.PI / 180) * Math.cos(lon * Math.PI / 180), Math.sin(lat * Math.PI / 180),
+  -Math.cos(lat * Math.PI / 180) * Math.sin(lon * Math.PI / 180));
+earth.addImpactMarker(ll(20, 10), 0xff5533);
+earth.addImpactMarker(ll(-10, 40), 0xffcc33);
+moon.addImpactMarker(ll(10, -10), 0xff5533);
+
+// Satellites: [radius, inclination°, phase, angular speed, colour, kind, label]
+const defs = [
+  [8.2, 51.6, 0.3, 0.35, 0x4fc3f7, 'satellite', 'Station'],
+  [12, 98, 2.0, 0.18, 0xffb74d, 'probe', 'Probe'],
+  [6.75, 20, 4.6, 0.6, 0xef5350, 'debris', 'Debris'],
+];
+const sel = num('sel', 0);
+const sats = defs.map(([r, inc, ph, w, color, kind, name], i) => {
+  const vis = createSatelliteVisual({ color, kind });
+  scene.add(vis.object);
+  const trail = new Trail({ color, capacity: 800 });
+  scene.add(trail.object);
+  const label = createLabel(name, color);
+  scene.add(label);
+  return { r, inc: inc * Math.PI / 180, ph, w, vis, trail, label, heating: i === 2 ? num('heat', 0.8) : 0, selected: i === sel, thrust: i === 0 && P.get('thrust') !== '0' };
+});
+const _p = new THREE.Vector3();
+const _v = new THREE.Vector3();
+function orbitState(s, t, pos, vel) {
+  const a = s.ph + s.w * t;
+  // circle in the XZ (equatorial) plane, eastward = towards -Z, then inclined about X
+  pos.set(Math.cos(a), 0, -Math.sin(a)).multiplyScalar(s.r);
+  vel.set(-Math.sin(a), 0, -Math.cos(a));
+  pos.applyAxisAngle(_xAxis, s.inc); vel.applyAxisAngle(_xAxis, s.inc);
+}
+const _xAxis = new THREE.Vector3(1, 0, 0);
+
+// Orbit line: ellipse rp 7.5, ra 16, inclined 30°
+const grid = createEquatorGrid();
+scene.add(grid.object);
+const target = new OrbitLine({ color: 0x10b981, capacity: 256, dashed: true });
+scene.add(target.object);
+{
+  const n = 200, pts = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; pts[i * 3] = 14 * Math.cos(a); pts[i * 3 + 2] = -14 * Math.sin(a); }
+  target.setPoints(pts, n, true);
+}
+const orbit = new OrbitLine({ color: 0x00e5ff, capacity: 256 });
+scene.add(orbit.object);
+{
+  const rp = 7.5, ra = 16, a = (rp + ra) / 2, e = (ra - rp) / (ra + rp), n = 256;
+  const pts = new Float32Array(n * 3), q = new THREE.Vector3();
+  for (let i = 0; i < n; i++) {
+    const nu = i / n * Math.PI * 2, r = a * (1 - e * e) / (1 + e * Math.cos(nu));
+    q.set(r * Math.cos(nu), 0, -r * Math.sin(nu)).applyAxisAngle(new THREE.Vector3(0, 0, 1), 0.52);
+    pts.set([q.x, q.y, q.z], i * 3);
+  }
+  orbit.setPoints(pts, n, true);
+  orbit.setApsides(new THREE.Vector3(rp, 0, 0).applyAxisAngle(new THREE.Vector3(0, 0, 1), 0.52),
+    new THREE.Vector3(-ra, 0, 0).applyAxisAngle(new THREE.Vector3(0, 0, 1), 0.52));
+  // nodes: where the tilted ellipse crosses the equator (here along ±Z)
+  const rn = a * (1 - e * e);
+  orbit.setNodes(new THREE.Vector3(0, 0, -rn), new THREE.Vector3(0, 0, rn));
+}
+
+const preview = createLaunchPreview(scene);
+preview.show(new THREE.Vector3(5.6, 3.6, 2.2), new THREE.Vector3(5.2, 5.6, 4.6));
+
+// Impact flash location: Earth-fixed point turned with the planet
+const rot0 = num('rot', 0.6);
+const flashDir = ll(-10, 40).applyAxisAngle(new THREE.Vector3(0, 1, 0), rot0).multiplyScalar(6.371);
+let flash = createImpactFlash(scene, flashDir, 0xffaa44);
+if (frozen) for (let a = num('flash', 0.35); a > 0; a -= 0.05) flash.update(Math.min(a, 0.05));
+
+const t0 = num('t', 0);
+// prefill trails with history
+for (const s of sats) {
+  for (let k = 300; k >= 0; k--) { orbitState(s, t0 - k * 0.03, _p, _v); s.trail.push(_p.x, _p.y, _p.z); }
+}
+
+const follow = P.has('follow') ? sats[num('follow', 0)] : null;
+const followOff = vec('off', new THREE.Vector3(0.00012, 0.00006, 0.00008));
+const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _n = new THREE.Vector3();
+if (follow) controls.enabled = false;
+// clean=1 hides overlays (labels, craft, lines, grid, markers); fov=<deg> zooms the camera
+if (P.has('fov')) { camera.fov = num('fov', 45); camera.updateProjectionMatrix(); }
+if (P.get('clean') === '1') {
+  for (const s of sats) { s.vis.object.visible = false; s.trail.setVisible(false); s.label.visible = false; }
+  orbit.setVisible(false); target.setVisible(false); grid.setVisible(false); moonLabel.visible = false;
+  preview.hide(); earth.clearImpactMarkers(); moon.clearImpactMarkers(); flash.dispose();
+}
+// moonll=lat,lon,alt[,tilt]: camera above a lunar feature (alt in render units),
+// looking down at it (tilt: offset towards lunar north, for an oblique view)
+if (P.has('moonll')) {
+  const [la, lo, alt, tilt = 0] = P.get('moonll').split(',').map(Number);
+  moon.update({ position: moonPos, sunDir, earthPosition: earth.group.position });
+  moon.surface.updateMatrixWorld(true);
+  const q = moon.surface.getWorldQuaternion(new THREE.Quaternion());
+  const d = ll(la, lo).applyQuaternion(q);
+  const north = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+  // sunll=lat,lon: the Sun overhead at this point of the Moon (body frame)
+  if (P.has('sunll')) { const [sa, so] = P.get('sunll').split(',').map(Number); sunDir.copy(ll(sa, so).applyQuaternion(q)); }
+  const target = moonPos.clone().addScaledVector(d, 1.7374);
+  controls.target.copy(target);
+  camera.position.copy(target).addScaledVector(d, alt).addScaledVector(north, -tilt);
+  camera.up.copy(north);
+  controls.update();
+}
+let t = t0, last = performance.now(), flashTimer = 0, frames = 0;
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  if (!frozen) t += dt;
+  frames++;
+  controls.update();
+  earth.update({ rotation: rot0 + (frozen ? 0 : t * 0.01), sunDir, cameraPosition: camera.position, time: t * 200, settings });
+  moon.update({ position: moonPos, sunDir, earthPosition: earth.group.position });
+  sky.update({ sunDir, camera });
+  for (const s of sats) {
+    orbitState(s, t, _p, _v);
+    if (!frozen) s.trail.push(_p.x, _p.y, _p.z);
+    s.vis.update({ position: _p, velocityDir: _v, camera, heating: s.heating, selected: s.selected, sunDir, thrustDir: s.thrust ? _v : null });
+    s.label.position.copy(_p);
+    if (follow === s) { // close-up test camera: offset given in the sat's prograde frame
+      _f.copy(_v).normalize(); _r.copy(_p).normalize(); _n.crossVectors(_r, _f);
+      controls.target.copy(_p);
+      camera.position.copy(_p).addScaledVector(_n, followOff.x).addScaledVector(_r, followOff.y).addScaledVector(_f, followOff.z);
+      camera.lookAt(_p);
+    }
+  }
+  if (!frozen) {
+    flashTimer += dt;
+    if (!flash.update(dt) && flashTimer > 3) { flash = createImpactFlash(scene, flashDir, 0xffaa44); flashTimer = 0; }
+  }
+  view.render();
+  if (frames % 30 === 0) info.textContent = `${quality} · ${renderer.info.render.calls} calls · ${renderer.info.render.triangles} tris`;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.__stats = () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles, frames });
+</script>
+</body>
+</html>

@@ -1,582 +1,67 @@
-<html>
-
+<!doctype html>
+<html lang="en">
 <head>
-    <title>Earth-Moon Simulation</title>
-    <style>
-        body {
-            margin: 0;
-            background-color: black;
-        }
-
-        canvas {
-            width: 100%;
-            height: 100%;
-        }
-
-
-        input,
-        textarea,
-        select {
-            font: 1em "Source Code Pro", monospace
-        }
-
-
-        #controls {
-            position: absolute;
-            z-index: 100;
-            color: white;
-        }
-
-        #controls input[type=range] {
-            background: none;
-        }
-
-        #controls input[type=number] {
-            width: 3em
-        }
-
-        label {
-            display: block;
-        }
-
-        label2 {
-             /* bottom: 0px; */
-            font-size: x-small;
-            margin: 0px;
-        }
-
-        #IHMCam,
-        #IHMSelection {
-            bottom: 0px;
-            font-size: x-small;
-            margin: 0px;
-            padding: 5px;
-        }
-
-        .dg.ac {
-            z-index: 100!important
-        }
-
-        labelcb {
-            border: 1px solid #ccc;
-            padding: 10px;
-            margin: 0 0 10px;
-            display: block;
-        }
-
-        #GeneralInfos {
-            color: #ffffff;
-            background-color: #990000;
-            font-size: small;
-            position: absolute;
-            z-index: 100;
-            bottom: 0px;
-            padding: 5px;
-        }
-    </style>
-</head>
-
-<body>
-    <div id="controls">
-        <label>
-            target framerate:
-            <input id="framerate" type="number" value="30" max="60" min="1" />
-        </label>
-        <!--<label>-->
-        <!--real framerate: <span id="real_framerate">0</span>-->
-        <!--</label>-->
-        <!--<label>-->
-        <!--<input id="activate_trails" type="checkbox" />-->
-        <!--show trails-->
-        <!--</label>-->
-        <!--<label>-->
-        <!--Trail length:-->
-        <!--<input id="trails_length" min="0" max="3000" value="100" type="range" />-->
-        <!--<span></span>-->
-        <!--</label>-->
-
-
-        <label>
-            particles alive:
-            <span id="movers_alive_count"></span>
-        </label>
-
-        <label>
-            largest / total mass:
-            <br>
-            <span id="maximum_mass"></span> /
-            <span id="total_mass"></span>
-        </label>
-
-        <label2>
-            BIGGEST:
-            <span id="largest_pos" onclick="selectBiggest();"></span>
-        </label2>
-
-        <fieldset id="IHMCam">
-            <label>
-                <input id="cbCam" type="checkbox" checked> CAMERA:
-            </label>
-            <label2>
-                <span id="camera_info"></span>
-            </label2>
-        </fieldset>
-
-        <fieldset id="IHMSelection">
-            LAST SELECTED:
-            <span id="select_infos"></span>
-            <br/>
-            <!-- <button onclick='lookSun(this.innerHTML);'>lookOrigin</button> -->
-            <!-- <button onclick='inverseSelectionStatus();'>kill/reborn</button>
-            <button onclick='inverseDirection();'>inverse direction</button> -->
-            <!-- <br/> -->
-            <select id="mySelect" onchange="setSelection(this)" disabled>
-                <option value="0" selected>Action on Selection</option>
-                <option value="changeMass">change the Mass</option>
-                <option value="inverseSelectionStatus">kill/reborn</option>
-                <option value="inverseDirection">inverse direction</option>
-                <!-- <option value="valeur2" selected>Valeur 2</option> -->
-                <option value="newColor">newColor</option>
-            </select>
-            <div>
-				<label for="cbGeneralOrbitCam">
-                    <input type="radio" name="controlCam" id="cbGeneralOrbitCam" checked> General Orbit Cam
-				</label>
-				<label for="cbFollowOrbitCam">
-                    <input type="radio" name="controlCam" id="cbFollowOrbitCam" onclick="onCbOrbitCam();"> Follow by Orbit Cam
-				</label>
-                <label for="cbFPS">
-                    <input type="radio" name="controlCam" id="cbFPS" value="FPS" onclick="onCbFPSCam();"> Follow by Free Cam
-				</label>
-            </div>
-
-            <div>
-                <label for="cbZoom">
-                    <input id="cbZoom" type="checkbox" name="cbZoom" disabled> AutoZoomIn on it
-                </label>
-            </div>
-        </fieldset>
-
-        <div id='IHMButtons' style='position:absolute'>
-        </div>
-
-        <!-- <div id='GeneralInfos' style='position:absolute'> -->
-        <!-- </div> -->
-
-    </div>
-
-    <div id="GeneralInfos">PAUSE</div>
-
-    <script src="./js/libs/jQuery.min.js"></script>
-    <script src="./js/libs/dat.gui.min.js"></script>
-    <script src="./js/libs/three.min.js"></script>
-	
-    <script src="./js/controls/orbit_controls.js"></script>
-    <script src="./js/controls/FirstPersonControls.js"></script>
-
-    <script src="./js/functions.js"></script>
-    <script src="./js/Mover.js"></script>
-    <script src="./js/options.config.dat2.js"></script>
-
-
-
-    <script>
-		var options = {
-			NAME:"EARTH_MOON",  // name of Simulation
-			NAME_SVG: "EM2",
-			version : 2,
-			framerate: 60,
-			G: 6.673e-11, // 10 ?? 
-			
-			TRAILS_DISPLAY: true,
-			SHOW_DIED: false,
-			SHOW_LABELS: true, 
-			TRAILS_LENGTH: 1000, // Max length of Trails 
-			
-			SPECIFIC_MASS : 5000, // 5 tons 
-			START_SPEED: 2,
-			RADIUS:1, 
-			
-			MOON_SPEED: 1, // initial Moon speed 
-			
-			MoveSpeed: 50,  // for moving by keyBoard Up / Down keys
-
-			MAX_DISTANCE: 300000,  // Max distance from center to update Movers 
-			
-			MASS_FACTOR     : 1e20, // ??
-			DISTANCE_FACTOR : 1e6,
-			
-			SPECIFIC_GRAVITY_FCT : function (mass, d) {  return - 400000 * mass / (d * d); },
-			
-			RESET_CAM : function () {  camera.position.set(0, 350, 700); },
-		/*
-			MASS_FACTOR   : 100000, // 1:10 Gigatonnes = 1:10*10^9 tons = 1:10*10^12 kg ?? 
-			DISTANCE_FACTOR : 1000, // 1:1000 km = 1:10^6 meters
-			RADIUS_FACTOR   : 1000, // for display of size ? not in use for the moment
-		*/
-		};
-	
-		var gui = InitGUIFromOptions(options);
-
-        //allow cross origin loading
-        THREE.ImageUtils.crossOrigin = '';
-
-        // Camera, scene, and renderer
-        var scene = new THREE.Scene();
-        var camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 5000);
-        scene.add(camera);
-        camera.position.set(0, 350, 700);
-
-        var renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        document.body.appendChild(renderer.domElement);
-
-        // Orbit Controls
-        var controlOrbit = new THREE.OrbitControls(camera, renderer.domElement);
-		var controls = controlOrbit;
-
-        // Lights
-        var ambientLight = new THREE.AmbientLight(0xf1f1f1);
-        ambientLight.name = "ambientLight";
-        scene.add(ambientLight);
-
-        var spotLight = new THREE.DirectionalLight(0xffffff);
-        spotLight.position.set(50, 50, 50);
-        spotLight.name = "spotLight";
-        scene.add(spotLight);
-
-        // ME 
-        var baseurl = window.location.origin + window.location.pathname;
-
-        //Objects (We build a mesh using a geometry and a material)
-
-        // Earth
-        var earthGeometry = new THREE.SphereGeometry(6.378, 50, 50);
-        var earthMaterial = new THREE.MeshPhongMaterial({
-            map: new THREE.ImageUtils.loadTexture("./images/earth_3.jpg"),
-            color: 0xf2f2f2,
-            specular: 0xbbbbbb,
-            shininess: 2
-        });
-        var earth = new THREE.Mesh(earthGeometry, earthMaterial);
-        earth.name = "Earth";
-        scene.add(earth);
-
-        // Clouds
-        var cloudGeometry = new THREE.SphereGeometry(6.478, 50, 50);
-        var cloudMaterial = new THREE.MeshPhongMaterial({
-            map: new THREE.ImageUtils.loadTexture("./images/clouds_2.jpg"),
-            transparent: true,
-            opacity: 0.1
-        });
-        var clouds = new THREE.Mesh(cloudGeometry, cloudMaterial);
-        clouds.name = "EarthClouds";
-        scene.add(clouds);
-
-        // Stars Fields
-        var starGeometry = new THREE.SphereGeometry(3000, 50, 50);
-        var starMaterial = new THREE.MeshPhongMaterial({
-            map: new THREE.ImageUtils.loadTexture("./images/galaxy_starfield.png"),
-            side: THREE.DoubleSide,
-            shininess: 0
-        });
-        var starField = new THREE.Mesh(starGeometry, starMaterial);
-        starField.name = "StarField";
-        scene.add(starField);
-		
-		// Moon initial position
-        var rOrbit = 384.405;
-        var theta = 0;
-        var dTheta = 2 * Math.PI / 1000;
-
-		// For Flyby CAM
-        var dx = .01;
-        var dy = -.01;
-        var dz = -.05;
-		var isFlybyCam = false; 
-
-        // Moon Meshs
-        var moonGeometry = new THREE.SphereGeometry(1.738, 50, 50);
-        var moonMaterial = new THREE.MeshPhongMaterial({
-            map: THREE.ImageUtils.loadTexture("./images/moon_texture.jpg")
-        });
-        var moonS = new THREE.Mesh(moonGeometry, moonMaterial);
-        moonS.name = "MoonSimulation";
-        moonS.position.set(rOrbit, 0, 0);
-        scene.add(moonS);
-
-        var moonT = new THREE.Mesh(moonGeometry, moonMaterial);
-        moonT.name = "MoonTheorical";
-        moonT.position.set(rOrbit, 0, 0);
-        scene.add(moonT);		
-		
-        // Camera vector
-        var earthVec = new THREE.Vector3(0, 0, 0);
-
-        // ME --- CHX
-        var $camera_info  = $("#camera_info");
-        var $select_infos = $("#select_infos");
-        
-        var selectionLight = new THREE.PointLight(0xff0000, 0);
-        selectionLight.castShadow = true;
-        scene.add(selectionLight); // ?? 
-
-        var movers = [];
-
-        var SPHERE_SIDES = 12;
-
-        // SELECTION VAR
-        var biggest
-        var selection
-        var lastOne
-
-        var pause = false;
-
-		simulationVelocity = new THREE.Vector3(0, 0, 1 );
-        moverEarth = AddSpecialMoverFromMesh2(59720 * options.MASS_FACTOR, earth, 'Earth',       {colorHex:0x0000ff} );
-		moverMoonT = AddSpecialMoverFromMesh2(  736 * options.MASS_FACTOR, moonT, 'TheoricMoon', {colorHex:0x7FFF00});
-        moverMoonS = AddSpecialMoverFromMesh2(  736 * options.MASS_FACTOR, moonS, 'SimulatedMoon', {vel:simulationVelocity});
-
-		selection = moverMoonS;
-
-        // ------------
-
-        //Render loop 
-        var render = function () {
-		
-			// DEPLACEMENT 
-			var vector = new THREE.Vector3();
-			var direction = camera.getWorldDirection(vector);
-			var moveSpeed = parseFloat(options.MoveSpeed);
-			if (holdUp) {
-				camera.position.add(vector.multiplyScalar(moveSpeed));
-			} else if (holdDown) {
-				camera.position.sub(direction.multiplyScalar(moveSpeed));
-			}
-			
-			var movers_alive_count = 0;
-			total_mass = 0;
-			var maximum_mass = 0.00;
-			
-			if (biggest)
-				largest_pos = 'dist: ' + NumToFormat(biggest.location.distanceTo(camera.position)) + ' id:' + biggest.name;
-			else
-				largest_pos = 0
-
-			if (movers && movers.length) {
-				if (!pause) {
-
-					// FIRST LOOP
-					for (var i = movers.length - 1; i >= 0; i--) {
-						var m = movers[i];
-
-						if (m.alive) {
-							movers_alive_count++;
-							total_mass += m.mass;
-							if (m.mass > maximum_mass) {
-								maximum_mass = m.mass;
-								biggest = m;
-							}
-
-							// SECOND LOOP for dynamic movers only (not Moon)
-							for (var j = movers.length - 1; j >= 3; j--) {
-								var a = movers[j];
-								if (movers[i].alive && movers[j].alive && i != j) {
-									var distance = m.location.distanceTo(a.location);
-
-									//var radiusM = Math.pow((m.mass / MASS_FACTOR / MASS_FACTOR / 4 * Math.PI), 1 / 3) / 3;
-									//var radiusA = Math.pow((a.mass / MASS_FACTOR / MASS_FACTOR / 4 * Math.PI), 1 / 3) / 3;
-
-									var radiusA = a.getRadius();
-									var radiusM = m.getRadius(); 
-								
-									if (distance < radiusM + radiusA) {
-										console.log("EAT distance:"+distance)
-										//console.log("EAT radiusM:"+radiusM)
-										//console.log("EAT radiusA:"+radiusA)
-										// merge objects
-										if (a.mass > m.mass)
-											a.eat(m);
-										else
-											m.eat(a);
-									} else {
-										a.attract(m);
-									}
-								
-									a.attract(m);
-								}
-							}
-						}
-					}
-				}
-				
-				// DISPLAY Dynamic movers (added with right clic)
-				for (var i = movers.length - 1; i >= 3; i--) {
-					var m = movers[i];
-					if (m.alive && m.distanceToCenter() < options.MAX_DISTANCE) {
-						if (!pause) {
-							m.update();
-						}
-					}
-					m.display();
-					updateTrails(m);
-				}
-			
-			
-				// UPDATE Moon Movers
-				if (!pause) {
-				
-					earth.rotation.y += .0009;
-					clouds.rotation.y += .00005;
-
-					//Moon orbit        
-					theta += dTheta;
-					moonT.position.x = rOrbit * Math.cos(theta);
-					moonT.position.z = rOrbit * Math.sin(theta);
-
-					//moverEarth.attract(moverMoonS);
-					//moverEarth.update(); // Don't move Earth for the moment
-					
-					moverMoonS.attract(moverEarth);
-					moverMoonS.update();
-					moverMoonT.updateMeshPositionInTrail();
-				}
-				
-				moverEarth.display();
-				//updateTrails(moverEarth)
-
-				moverMoonS.display(); 
-				updateTrails(moverMoonS);
-				
-				moverMoonT.display(); 
-				updateTrails(moverMoonT);
-
-	
-				// AUTOZOOM :
-				if(!pause && document.getElementById('cbZoom').checked){
-					if(selection.mesh.position.distanceTo(camera.position)>30){
-						moveSpeed = parseFloat(options.MoveSpeed);
-						direction2 = direction.clone().multiplyScalar(moveSpeed);
-						//console.log(direction2.length());
-						camera.position.x += direction2.x;
-						camera.position.y += direction2.y;
-						camera.position.z += direction2.z;
-					} else {
-						// STOP The AutoZoomIn
-						// document.getElementById("cbZoom").checked = false;
-						options.MoveSpeed = 1;
-					    //moveSpeed = Math.floor(options.MoveSpeed);
-					}
-				}
-	
-				// Follow by Free FPC CAM if Enabled 
-				if (selection && document.getElementById('cbFPS').checked) {
-					camera.lookAt(selection.mesh.position);
-
-	
-				} else if (selection && document.getElementById('cbFollowOrbitCam').checked) {
-					camera.lookAt(selection.mesh.position);
-				
-				
-				} else {
-				
-					if(!pause && isFlybyCam){
-						//Flyby
-						if (camera.position.z < 0) {
-							dx *= -1;
-						}
-						camera.position.x += dx;
-						camera.position.y += dy;
-						camera.position.z += dz;
-
-						//camera.lookAt(earthVec);
-
-						//Flyby reset
-						if (camera.position.z < -100) {
-							//camera.position.set(0, 35, 70);
-						}
-					
-					}
-
-					//camera.lookAt(earthVec);					
-				}
-			}
-		
-			// INFOS PANEL
-
-			$movers_alive_count.html(movers_alive_count + ' / ' + movers.length);
-			var rapportMasse = maximum_mass / total_mass * 100;
-
-			$maximum_mass.html(NumToFormat(maximum_mass));
-			$maximum_mass.css('color', "#" + biggest.mesh.material.color.getHexString());
-			$total_mass.html(NumToFormat(total_mass) + ' = ' + NumToFormat(rapportMasse) + '%' );
-
-			$largest_pos.html(largest_pos);
-			$largest_pos.css('color', "#" + biggest.color.getHexString());
-			
-
-            // camera infos 
-            if (document.getElementById('cbCam').checked)
-                $camera_info.html(LogCam() + LogFPCam());
-            else $camera_info.html('');
-
-            // selection info/debug
-            if (selection) {
-                $select_infos.html(LogSelection());
-                $select_infos.css('color', "#" + selection.mesh.material.color.getHexString());
-            }
-
-			// GeneralInfos
-            if (pause)
-                document.getElementById('GeneralInfos').innerHTML = 'PAUSE : Press SPACE to Run';
-            else
-                document.getElementById('GeneralInfos').innerHTML = 'RUNNING : Press SPACE to Stop';
-
-            renderer.render(scene, camera);
-            requestAnimationFrame(render);
-        };
-        render();
-
-function reset() {
-    console.log("RESET ALL !")
-    if (movers) {
-        for (var i = 0; i < movers.length; i = i + 1) {
-			RemoveMover(movers[i], i);
-        }
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Satalitte Physics · Earth–Moon orbital mechanics sandbox</title>
+  <meta name="description" content="Launch satellites, fly burns and watch real Newtonian gravity, the Moon's pull, J2 and atmospheric drag shape their orbits. An interactive Earth–Moon orbital mechanics sandbox in your browser.">
+  <meta name="theme-color" content="#07090d">
+  <meta name="color-scheme" content="dark">
+  <meta name="author" content="Ibrakadabra (ibra-kdbra)">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Satalitte Physics">
+  <meta property="og:description" content="Interactive Earth–Moon orbital mechanics sandbox: orbits, gravity, drag, Hohmann transfers and Newton's cannon.">
+  <meta property="og:site_name" content="Satalitte Physics">
+  <meta name="twitter:card" content="summary">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2307090d'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%231f6fc0'/%3E%3Cellipse cx='16' cy='16' rx='13' ry='5' fill='none' stroke='%235ec4dd' stroke-width='1.8' transform='rotate(-28 16 16)'/%3E%3Ccircle cx='26.4' cy='10.2' r='2.2' fill='%235ec4dd'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles/main.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three/build/three.module.min.js",
+        "three/addons/": "./vendor/three/addons/",
+        "lil-gui": "./vendor/lil-gui/lil-gui.esm.min.js"
+      }
     }
-    movers = []; // important 
-    
-	// Reset Moon Mesh positions 
-    moonS.position.set(rOrbit, 0, 0);
-	moonT.position.set(rOrbit, 0, 0);
+  </script>
+  <!-- Critical path: fetch the engine in parallel with main.js instead of after it.
+       (Preloading the textures too was measured slower: they compete with the scripts.) -->
+  <link rel="modulepreload" href="./vendor/three/build/three.module.min.js">
+  <link rel="modulepreload" href="./vendor/three/build/three.core.min.js">
+</head>
+<body>
+  <div id="viewport" aria-label="3D view of the Earth–Moon system" role="application"></div>
+  <div id="ui"></div>
 
-	// RESET !
-	simulationVelocity = new THREE.Vector3(0, 0, options.MOON_SPEED);
-	console.log("MOON_SPEED:"+simulationVelocity.length()); 
-	moverEarth = AddSpecialMoverFromMesh2(59720 * options.MASS_FACTOR, earth, 'Earth', {colorHex:0x0000ff} );
-	moverMoonT = AddSpecialMoverFromMesh2(  736 * options.MASS_FACTOR, moonT, 'TheoricMoon', {colorHex:0x7FFF00});
-	moverMoonS = AddSpecialMoverFromMesh2(  7500, moonS, 'SimulatedMoon', {vel:simulationVelocity});
+  <div id="loader" class="loader">
+    <div class="loader__card">
+      <div class="loader__brand"><svg class="logo" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><circle cx="16" cy="16" r="8.2" fill="#1f6fc0"/><ellipse cx="16" cy="16" rx="14" ry="5.6" fill="none" stroke="#5ec4dd" stroke-width="1.6" transform="rotate(-28 16 16)"/><circle cx="27.6" cy="9.8" r="2.1" fill="#e6f7ff"/></svg><span class="loader__name">Satalitte Physics</span></div>
+      <div class="loader__bar" role="progressbar" aria-label="Loading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span class="loader__fill"></span></div>
+      <p class="loader__label">Loading…</p>
+    </div>
+  </div>
 
-    // SVG LAST CONFIG OPTIONS
-    // localStorage.setItem("options", JSON.stringify(options));
-}
+  <div id="fatal" class="fatal" hidden>
+    <div class="fatal__card" role="alert">
+      <h2 class="fatal__title">3D graphics are not available</h2>
+      <p class="fatal__msg">WebGL is not available in this browser, so the simulation cannot run.</p>
+      <ul class="fatal__tips">
+        <li>Turn on hardware acceleration in your browser settings.</li>
+        <li>Update your graphics drivers, or try another browser.</li>
+      </ul>
+      <div class="fatal__actions"><a class="btn" href="./legacy/index.html">Open the classic version</a></div>
+    </div>
+  </div>
 
-iMoonS = 1;
-function reinitMoonS() {
-	moonS2 = moonS.clone();
-	
-	iMoonS++; 
-	
-	// Reset Moon Mesh positions 
-    moonS2.position.set(rOrbit, 0, 0);
-	//moonT.position.set(rOrbit, 0, 0);
-	
-	simulationVelocity = new THREE.Vector3(0, 0, options.MOON_SPEED);
-	console.log("MOON_SPEED:"+simulationVelocity.length()); 
-	moverMoonS = AddSpecialMoverFromMesh2(  736 * options.MASS_FACTOR, moonS, 'SimulatedMoon', {vel:simulationVelocity});
-}
+  <noscript>
+    <div class="fatal">
+      <div class="fatal__card">
+        <h2 class="fatal__title">JavaScript is turned off</h2>
+        <p class="fatal__msg">Satalitte Physics is an interactive simulation and needs JavaScript. Please enable it and reload the page.</p>
+      </div>
+    </div>
+  </noscript>
 
-    </script>
+  <script type="module" src="./src/main.js" onerror="(function(){var l=document.getElementById('loader');if(l)l.hidden=true;var f=document.getElementById('fatal');if(!f)return;f.querySelector('.fatal__title').textContent='The simulation could not start';f.querySelector('.fatal__msg').textContent='The application scripts failed to load. Check your connection and reload the page.';var t=f.querySelector('.fatal__tips');if(t)t.hidden=true;f.hidden=false;})()"></script>
 </body>
-
 </html>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU check</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #05080d; color: #c9d4e0; font: 13px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  p { margin: 0 0 12px; color: #8a98a8; max-width: 70ch; }
+  #gpu { color: #e8eef5; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+  figure { margin: 0; background: #0b111a; border: 1px solid #1a2433; border-radius: 6px; overflow: hidden; }
+  iframe { display: block; width: 100%; aspect-ratio: 16 / 10; border: 0; background: #000; }
+  figcaption { padding: 6px 8px; display: flex; justify-content: space-between; gap: 8px; }
+  figcaption a { color: #6f8fb0; }
+  #log { margin-top: 12px; white-space: pre-wrap; font: 12px ui-monospace, monospace; color: #e7a0a0; }
+</style>
+</head>
+<body>
+<h1>GPU check</h1>
+<p>Each tile draws the Earth with one feature switched off or one debug view on. Wait about 20 seconds,
+then take one screenshot of the whole page. GPU: <span id="gpu">…</span></p>
+<div class="grid" id="grid"></div>
+<div id="log"></div>
+<script>
+// [label, render.html query]
+const VARIANTS = [
+  ['1 · full (high)', ''],
+  ['2 · low quality', 'q=low'],
+  ['3 · no bloom', 'bloom=0'],
+  ['4 · no atmosphere', 'atmo=0'],
+  ['5 · no clouds', 'clouds=0'],
+  ['6 · no city lights', 'lights=0'],
+  ['7 · day map only', 'dbg=1'],
+  ['8 · lit, no aerial perspective', 'dbg=2'],
+  ['9 · sunlight at the ground', 'dbg=3'],
+  ['10 · constant red', 'dbg=4'],
+  ['11 · NaN check (magenta = NaN)', 'dbg=5'],
+  ['12 · NaN probe: surface, clouds, atmosphere', 'nanprobe=1&bloom=0'],
+  ['13 · NaN probe, close to the limb', 'nanprobe=1&bloom=0&cam=0,1.2,7.4'],
+  ['14 · NaN probe, low orbit', 'nanprobe=1&bloom=0&cam=0.6,0.25,6.95&target=0,0,6'],
+];
+const grid = document.getElementById('grid');
+const log = document.getElementById('log');
+for (const [label, q] of VARIANTS) {
+  const src = `render.html?clean=1&noup=1${q ? `&${q}` : ''}`;
+  const fig = document.createElement('figure');
+  fig.innerHTML = `<iframe loading="eager" title="${label}"></iframe><figcaption><span>${label}</span><a href="${src}" target="_blank" rel="noopener">open</a></figcaption>`;
+  fig.querySelector('iframe').src = src;
+  grid.append(fig);
+}
+addEventListener('message', (e) => {
+  const { kind, detail, gpu, variant } = e.data || {};
+  if (gpu) document.getElementById('gpu').textContent = gpu;
+  if (kind && kind !== 'gpu') log.textContent += `${variant}: ${kind}${detail ? `\n${detail}` : ''}\n\n`;
+});
+</script>
+</body>
+</html>
