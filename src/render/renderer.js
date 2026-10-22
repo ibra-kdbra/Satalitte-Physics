@@ -46,7 +46,24 @@ export function createRenderer(container, { quality = 'high', software = 'auto' 
   container.appendChild(renderer.domElement);
 
   // Software rasterisers (SwiftShader, llvmpipe) cannot afford MSAA.
-  const softwareGL = software === 'auto' ? isSoftwareRenderer(renderer.getContext()) : !!software;
+  const gl = renderer.getContext();
+  const softwareGL = software === 'auto' ? isSoftwareRenderer(gl) : !!software;
+  const gpu = gpuName(gl);
+  // HDR bloom needs float colour buffers; without them, draw straight to the canvas.
+  const floatTargets = renderer.extensions.has('EXT_color_buffer_float') || renderer.extensions.has('EXT_color_buffer_half_float');
+
+  // Failures that would otherwise leave a silent black view: a shader the
+  // driver rejects, or the context lost (usually out of video memory).
+  let onIssue = null;
+  const issue = (kind, detail) => { if (onIssue) onIssue(kind, detail); };
+  renderer.debug.onShaderError = (ctx, program, vs, fs) => {
+    const log = [ctx.getProgramInfoLog(program), ctx.getShaderInfoLog(vs), ctx.getShaderInfoLog(fs)]
+      .map((l) => (l || '').trim()).filter(Boolean).join('\n');
+    console.error(`Shader failed to compile on ${gpu}:\n${log}`);
+    issue('shader', log);
+  };
+  renderer.domElement.addEventListener('webglcontextlost', (e) => { e.preventDefault(); issue('lost'); });
+  renderer.domElement.addEventListener('webglcontextrestored', () => issue('restored'));
 
   const scene = new Scene();
   const camera = new PerspectiveCamera(45, 1, 1e-4, 2e5);
@@ -61,7 +78,7 @@ export function createRenderer(container, { quality = 'high', software = 'auto' 
 
   let width = Math.max(1, container.clientWidth || window.innerWidth);
   let height = Math.max(1, container.clientHeight || window.innerHeight);
-  let bloomEnabled = QUALITY[q].bloom;
+  let bloomEnabled = QUALITY[q].bloom && floatTargets;
   let composer = null;
   let bloomPass = null;
   let resScale = 1; // adaptive resolution: fraction of the quality's pixel ratio
@@ -106,7 +123,7 @@ export function createRenderer(container, { quality = 'high', software = 'auto' 
   }
 
   function setBloom(enabled) {
-    bloomEnabled = !!enabled;
+    bloomEnabled = !!enabled && floatTargets;
     if (bloomEnabled) ensureComposer();
   }
 
@@ -145,7 +162,8 @@ export function createRenderer(container, { quality = 'high', software = 'auto' 
     if (bloomEnabled && composer) renderer.setRenderTarget(composer.readBuffer); // render-target program variants
     let done;
     try { done = renderer.compileAsync(scene, camera); } finally { renderer.setRenderTarget(prev); }
-    await done;
+    // Never let a stalled driver hold the start-up: the first frame compiles what is left.
+    await Promise.race([done, new Promise((r) => setTimeout(r, 5000))]);
   }
 
   function render() {
@@ -159,8 +177,19 @@ export function createRenderer(container, { quality = 'high', software = 'auto' 
 
   return {
     renderer, scene, camera, labelRenderer, setSize, setBloom, setQuality, render, renderScene, renderLabels, compile,
-    setResolutionScale, getResolutionScale: () => resScale, softwareGL,
+    setResolutionScale, getResolutionScale: () => resScale, softwareGL, gpu,
+    set onIssue(fn) { onIssue = fn; },
   };
+}
+
+/** The GPU's name as the browser reports it (Chrome masks RENDERER behind the debug extension). */
+export function gpuName(gl) {
+  try {
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    return String((ext && gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) || gl.getParameter(gl.RENDERER) || 'unknown GPU');
+  } catch {
+    return 'unknown GPU';
+  }
 }
 
 /** True on software rasterisers (SwiftShader, llvmpipe): no GPU, so keep every cost minimal. */

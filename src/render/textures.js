@@ -8,7 +8,7 @@
 //   low    : 2K Earth, 1K Moon + relief, 1K Milky Way, no upgrades
 //   medium : 2K Earth → 4K day + clouds; 2K Moon, 1K → 2K Moon relief; 2K Milky Way
 //   high   : 2K Earth → 4K day, relief, clouds, lights → 8K day + lights
-//            (8K only with maxTextureSize ≥ 8192, a fine pointer and a GPU);
+//            (8K only with maxTextureSize ≥ 16384, ≥ 8 GB memory, a fine pointer and a GPU);
 //            2K Moon → 4K Moon, 1K → 2K Moon relief
 // Software GL (no GPU) never upgrades. Download sizes: see docs/CREDITS.md.
 import {
@@ -55,7 +55,10 @@ export function loadTextures(renderer, {
 } = {}) {
   const softwareGL = software === 'auto' ? isSoftwareRenderer(renderer.getContext()) : !!software;
   const coarse = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
-  const allow8k = !softwareGL && !coarse && renderer.capabilities.maxTextureSize >= 8192;
+  // 8K maps cost ~340 MB of video memory with mipmaps: only on GPUs that
+  // advertise 16K textures (desktop class) and devices with ≥ 8 GB of memory.
+  const memoryGB = typeof navigator !== 'undefined' ? navigator.deviceMemory : undefined;
+  const allow8k = !softwareGL && !coarse && renderer.capabilities.maxTextureSize >= 16384 && !(memoryGB < 8);
   const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   const aniso = quality === 'low' ? Math.min(4, maxAniso) : maxAniso;
   const files = manifest(quality, allow8k);

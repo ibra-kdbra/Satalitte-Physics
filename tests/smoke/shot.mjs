@@ -1,7 +1,8 @@
 // Headless smoke check: serves the repo over HTTP (like GitHub Pages) and loads a page
 // in Chromium, printing console errors and saving a screenshot.
 // Usage: node tests/smoke/shot.mjs <path-under-repo> <out.png> [waitMs] [width] [height]
-// Env: ACT (script run after waitMs), ACT_WAIT (ms), EVAL (expression printed before the screenshot)
+// Env: ACT (script run after waitMs), ACT_WAIT (ms), EVAL (expression printed before the screenshot),
+//      BLOCK (regex: matching requests get HTTP 403), DELAY_MS (extra latency for every request)
 // Needs Playwright (npm i -g playwright); uses /opt/pw-browsers/chromium when present.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -41,6 +42,14 @@ pg.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') er
 pg.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
 pg.on('requestfailed', (r) => errors.push(`[requestfailed] ${r.url()}`));
 pg.on('response', (r) => { if (r.status() >= 400) errors.push(`[http ${r.status()}] ${r.url()}`); });
+if (process.env.BLOCK || process.env.DELAY_MS) {
+  const block = process.env.BLOCK && new RegExp(process.env.BLOCK);
+  await pg.route('**/*', async (route) => {
+    if (process.env.DELAY_MS) await new Promise((r) => setTimeout(r, +process.env.DELAY_MS));
+    if (block && block.test(route.request().url())) return route.fulfill({ status: 403, contentType: 'text/html', body: '<h1>403</h1>' });
+    return route.continue();
+  });
+}
 await pg.goto(`http://localhost:${port}${base}${page}`);
 await pg.waitForTimeout(+wait);
 // Optional scripted scenario: ACT runs in the page, then the tool waits ACT_WAIT ms more.

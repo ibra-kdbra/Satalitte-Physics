@@ -1436,8 +1436,8 @@ for (const q of ['low', 'medium', 'high']) {
         const c = newCase(id, id, `render.html q=${q}, ${hw ? 'GPU code path (hw=1)' : 'software path (auto)'}`);
         await ctx.frames(2);
         const expect = hw ? { low: [], medium: ['day', 'clouds'], high: ['day', 'relief', 'clouds', 'lights'] }[q] : [];
-        // third tier (8K day + lights) on 'high' when the GPU takes 8192² textures (fine pointer, not software GL)
-        const max8k = await ctx.eval(() => window.__rq.renderer.capabilities.maxTextureSize >= 8192);
+        // third tier (8K day + lights) on 'high' on desktop-class GPUs (16K textures, fine pointer, ≥ 8 GB, not software GL)
+        const max8k = await ctx.eval(() => window.__rq.renderer.capabilities.maxTextureSize >= 16384 && !(navigator.deviceMemory < 8));
         const expect8 = hw && q === 'high' && max8k ? ['day', 'lights'] : [];
         const want = (k) => (expect8.includes(k) ? 8192 : expect.includes(k) ? 4096 : 2048);
         // wait for the progressive upgrade (1.5 s delay + download + upload) when expected

@@ -52,7 +52,7 @@ void main() {
   if (r > 1.0) discard;
   #include <logdepthbuf_fragment>
   // Solid disc with a thin darker rim so points read on bright clouds and on space.
-  float edge = smoothstep(1.0, 0.82, r);
+  float edge = 1.0 - smoothstep(0.82, 1.0, r); // edges must ascend: reversed is undefined in GLSL
   float rim = smoothstep(0.62, 0.78, r);
   vec3 col = mix(vColor, vColor * 0.35, rim * (1.0 - vHighlight));
   col = mix(col, vec3(1.0), vHighlight * rim);

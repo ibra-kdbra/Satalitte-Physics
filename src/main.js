@@ -134,6 +134,7 @@ async function boot() {
   // ?software=0|1 forces the GPU / CPU-rasteriser code paths (benchmarking); default: detected.
   const software = params.get('software') === '1' ? true : params.get('software') === '0' ? false : 'auto';
   view = createRenderer(container, { quality: settings.graphics.quality, software });
+  view.onIssue = onGraphicsIssue;
   view.setBloom(settings.graphics.bloom);
 
   const textures = await loadTextures(view.renderer, {
@@ -244,6 +245,33 @@ async function boot() {
   hud.hideLoading?.();
   hud.toast?.('Right-drag in space (Shift+drag, or long-press on touch) to launch your own satellite.', 'info');
   rafId = requestAnimationFrame((now) => { performance.mark('satalitte:first-frame'); frame(now); setTimeout(startCatalog, 0); });
+}
+
+/**
+ * The GPU rejected a shader, or dropped the WebGL context (usually out of
+ * video memory). Either would leave a silent black view, so say what happened;
+ * on context loss, step the quality down and reload.
+ */
+let shaderIssueShown = false;
+function onGraphicsIssue(kind) {
+  if (kind === 'shader') {
+    if (shaderIssueShown) return;
+    shaderIssueShown = true;
+    hud.toast?.(`Part of the scene could not be drawn on this graphics card (${view.gpu}). Lower the quality in Settings, or report the GPU name.`, 'danger');
+  } else if (kind === 'lost') {
+    cancelAnimationFrame(rafId);
+    const next = { high: 'medium', medium: 'low' }[settings.graphics.quality];
+    if (!next) {
+      hud.showFatal?.(`The graphics card stopped drawing the scene (${view.gpu}). Close other tabs and reload the page.`);
+      return;
+    }
+    settings.graphics.quality = next;
+    saveSettings();
+    hud.showFatal?.(`The graphics card ran out of memory. Reloading at ${next} quality…`);
+    const url = new URL(location.href);
+    url.searchParams.delete('quality');
+    setTimeout(() => location.replace(url), 1500);
+  }
 }
 
 /** Real satellites: loaded after the first frame, so they never delay it. */

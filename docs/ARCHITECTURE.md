@@ -56,8 +56,10 @@ day/lights/clouds, Moon, Milky Way 2K) and `scripts/build-textures.py` (relief,
 Milky Way 1K, stars); sources and licences in `docs/CREDITS.md`. The first
 frame uses 2K Earth maps; upgrades are downloaded afterwards and uploaded in
 idle time, one tier at a time (`textures.js`): 'medium' → 4K day + clouds;
-'high' → 4K Earth maps and 4K Moon, then 8K day + lights when the GPU allows
-8192² textures and the pointer is fine. 'low' and software GL never upgrade.
+'high' → 4K Earth maps and 4K Moon, then 8K day + lights on desktop-class
+GPUs (16384² textures, ≥ 8 GB memory, fine pointer). 'low' and software GL
+never upgrade. A shader the GPU rejects is reported in a toast; a lost WebGL
+context (out of video memory) steps the quality down and reloads.
 
 | file | content | notes |
 |---|---|---|

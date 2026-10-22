@@ -369,7 +369,7 @@ async function bytesPerQuality() {
   const tex = (pattern, res) => size(`assets/textures/${pattern.replace('{res}', res)}`);
   const out = {};
   for (const q of ['low', 'medium', 'high']) {
-    // desktop GPU: the 8K tier is allowed (fine pointer, max texture size ≥ 8192)
+    // desktop GPU: the 8K tier is allowed (fine pointer, max texture size ≥ 16384, ≥ 8 GB)
     let first = await size('assets/stars.bin'), later = 0;
     for (const [pattern, , , , start, tiers] of Object.values(manifest(q, true))) {
       first += await tex(pattern, start);
