@@ -38,6 +38,11 @@ jobs:
         uses: actions/configure-pages@v5
       - name: Fetch satellite data (falls back to the deployed copy per group)
         run: node scripts/fetch-satellites.mjs --fallback "${{ steps.pages.outputs.base_url }}/data/satellites/"
+      - name: Stamp the service worker's asset version (hash of assets/ and vendor/)
+        run: |
+          v=$(git ls-files -s assets vendor | sha256sum | cut -c1-12)
+          sed -i "s/^const ASSET_VERSION = 'dev';/const ASSET_VERSION = '$v';/" sw.js
+          grep -q "ASSET_VERSION = '$v'" sw.js
       - uses: actions/upload-pages-artifact@v3
         with:
           path: .

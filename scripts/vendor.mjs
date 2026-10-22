@@ -17,6 +17,7 @@ const ADDONS = [
   'postprocessing/RenderPass.js',
   'postprocessing/UnrealBloomPass.js',
   'postprocessing/OutputPass.js',
+  'loaders/KTX2Loader.js',
 ];
 
 rmSync(out, { recursive: true, force: true });
@@ -47,6 +48,11 @@ while (queue.length) {
   for (const m of code.matchAll(/from\s+['"](\.{1,2}\/[^'"]+)['"]/g)) {
     queue.push(join(dirname(rel), m[1]).replace(/\\/g, '/'));
   }
+}
+
+// Basis Universal transcoder for KTX2 textures (loaded by KTX2Loader at run time, by URL)
+for (const f of ['basis_transcoder.js', 'basis_transcoder.wasm', 'README.md']) {
+  copy(join(nm, 'three/examples/jsm/libs/basis', f), join(out, 'three/addons/libs/basis', f));
 }
 
 // lil-gui

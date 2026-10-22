@@ -35,6 +35,7 @@
 //   follow=0|1|2 off=x,y,z  close-up camera on a satellite (offset: normal, radial, prograde)
 //   thrust=0 disables the prograde burn plume on #1
 //   flash=<age s> impact flash age in frozen mode      clouds/atmo/lights=0 to disable
+//   nanprobe=1   non-finite Earth/cloud/atmosphere pixels drawn magenta
 //   dbg=1..5     Earth surface debug view (1 day map, 2 lit without aerial perspective, 3 sunlight, 4 red, 5 NaN check)
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -88,6 +89,10 @@ const settings = { clouds: P.get('clouds') !== '0', atmosphere: P.get('atmo') !=
 const earth = createEarth(textures, { quality });
 // dbg=1..5: Earth surface debug views (see SURFACE_FRAG in src/render/earth.js)
 if (P.has('dbg')) earth.surface.material.uniforms.debugView.value = num('dbg', 0);
+// nanprobe=1: paint non-finite Earth surface / cloud / atmosphere pixels magenta
+if (P.get('nanprobe') === '1') {
+  for (const m of [earth.surface.material, earth.clouds.material, earth.atmosphere.material]) { m.defines.NAN_PROBE = ''; m.needsUpdate = true; }
+}
 scene.add(earth.group);
 const moon = createMoon(textures, { quality });
 scene.add(moon.group);

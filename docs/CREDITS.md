@@ -14,12 +14,13 @@ rebuilds them from the original downloads).
 | `assets/textures/earth_day_{8192,4096,2048}.jpg` | NASA Blue Marble Next Generation, July 2004, 21600×10800 (NASA Earth Observatory / Visible Earth) | NASA imagery, not copyrighted. Credit: NASA Earth Observatory (Reto Stöckli). The water mask used to treat the oceans comes from the Solar System Scope 8K specular map (CC BY 4.0, © Solar System Scope, solarsystemscope.com). |
 | `assets/textures/earth_lights_{8192,4096,2048}.jpg` | NASA Black Marble 2016, 13500×6750 | NASA imagery, not copyrighted. Credit: NASA Earth Observatory (Joshua Stevens, Miguel Román, NASA GSFC). |
 | `assets/textures/earth_clouds_{4096,2048}.jpg` | Solar System Scope 8K clouds | CC BY 4.0, © Solar System Scope (solarsystemscope.com), based on NASA imagery. |
-| `assets/textures/earth_relief_{4096,2048}.jpg` | `examples/textures/planets/earth_bump_roughness_clouds_4096.jpg` from [three.js](https://github.com/mrdoob/three.js) r185 | MIT (© three.js authors), derived from NASA Visible Earth data. |
+| `assets/textures/earth_relief_{4096,2048}.jpg` | NASA Visible Earth topography (GEBCO 2008 grid), 21600×10800 land elevation | NASA imagery, not copyrighted. Credit: NASA Earth Observatory / GEBCO. The water mask in the G channel comes from the Solar System Scope 8K specular map (CC BY 4.0), the same mask the day map uses. |
 
 Processing:
 - Day map: resampled from 21600 px. Over water, the deep ocean was darkened and its bathymetry shading flattened, so oceans look as they do in photos from orbit; shallow shelves are kept.
 - City lights: the dark ground of Black Marble was removed, keeping only the emitted light, as greyscale.
-- Relief map: R holds elevation, G holds a water mask derived from the roughness channel; saved at 4:4:4 so the channels stay separate.
+- Relief map: R holds land elevation, G the water mask; saved at 4:4:4 so the channels stay separate.
+- KTX2: the 4K and 8K colour maps are also shipped as Basis Universal ETC1S `.ktx2` files, encoded from the JPEGs by `scripts/build-ktx2.mjs` (same images, GPU-compressed format).
 - Every new map was checked against the previous one by correlation (also against mirrored and shifted versions) to rule out a flipped or shifted projection.
 
 ## Moon
@@ -27,7 +28,7 @@ Processing:
 | shipped file | source | licence / attribution |
 |---|---|---|
 | `assets/textures/moon_{4096,2048,1024}.jpg` | NASA Scientific Visualization Studio, CGI Moon Kit: LRO LROC colour mosaic, 8192×4096 (converted to grey) | NASA imagery, not copyrighted. Credit: NASA's Scientific Visualization Studio (Ernie Wright), LRO LROC team (Arizona State University). |
-| `assets/textures/moon_normal_{2048,1024}.jpg` | NASA SVS CGI Moon Kit: LRO LOLA elevation, 16 px/degree | NASA data, not copyrighted. Credit: NASA's Scientific Visualization Studio, LRO LOLA team (NASA GSFC). Processing: tangent-space normals from the true slopes on the sphere (x = east, y = north), relief exaggerated 3×, saved at 4:4:4. |
+| `assets/textures/moon_normal_{4096,2048,1024}.jpg` | NASA SVS CGI Moon Kit: LRO LOLA elevation, 16 px/degree | NASA data, not copyrighted. Credit: NASA's Scientific Visualization Studio, LRO LOLA team (NASA GSFC). Processing: tangent-space normals from the true slopes on the sphere (x = east, y = north), relief exaggerated 3×, saved at 4:4:4. |
 
 The maps were checked against lunar landmarks (maria dark and low, Tycho bright, the South Pole–Aitken basin floor lowest). The project's original 2021 Moon map (`legacy/images/moon_texture.jpg`) is no longer used by the app.
 
@@ -47,17 +48,24 @@ The Sun is drawn procedurally; no image is used.
 
 ## Download size per quality
 
+Measured from the shipped files (`npm run bench` prints the same table). MiB.
+
 | quality | first frame | after upgrades |
 |---|---|---|
-| low (phones) | ≈ 2.1 MB (2K Earth, 1K Moon and Moon relief, 1K Milky Way) | no upgrades |
-| medium | ≈ 2.7 MB (2K Earth, 2K Moon, 1K Moon relief, 2K Milky Way) | + 4K day and clouds, 2K Moon relief: ≈ 7.3 MB in total |
-| high | ≈ 2.7 MB | + 4K Earth maps, 4K Moon and 2K Moon relief, then 8K day and city lights (desktop GPUs only): ≈ 14.5 MB in total |
+| low (phones) | 2.1 (2K Earth, 1K Moon and Moon relief, 1K Milky Way, stars) | no upgrades |
+| medium | 2.8 (2K Earth, 2K Moon, 1K Moon relief, 2K Milky Way, stars) | + 4K day and clouds (KTX2), 2K Moon relief, transcoder: 7.0 in total |
+| high | 2.8 | + 4K Earth maps and 4K Moon (KTX2 where colour), 2K Moon relief, transcoder: 10.1; then 8K day and city lights on desktop-class GPUs: 13.8 |
+| high, near the Moon | | + 4K Moon relief on demand: 4.8 |
+
+Repeat visits load textures and libraries from the service worker's cache (`sw.js`).
 
 ## Libraries
 
 - [three.js](https://threejs.org) r185: MIT licence, © three.js authors. Vendored in `vendor/three`.
 - [lil-gui](https://lil-gui.georgealways.com) 0.21: MIT licence, © George Michael Brower.
 - [satellite.js](https://github.com/shashwatak/satellite-js): MIT licence.
+- [Basis Universal](https://github.com/BinomialLLC/basis_universal) transcoder (shipped with three.js, `vendor/three/addons/libs/basis`): Apache 2.0, © Binomial LLC.
+- Build tools only (not shipped): [ktx2-encoder](https://github.com/gz65555/ktx2-encoder) (MIT, wraps the Basis Universal encoder, Apache 2.0) and [jpeg-js](https://github.com/jpeg-js/jpeg-js) (BSD-3-Clause).
 
 ## Science references used by the renderer
 

@@ -287,9 +287,12 @@ async function withSession(browser, port, s) {
       const msgs = log.console.slice(log.cursor);
       log.cursor = log.console.length;
       const env = msgs.filter((m) => ENV_WARNINGS.some((re) => re.test(m)));
-      // ERR_ABORTED on stars.bin is reported intermittently by the headless browser although the
-      // catalogue arrives (checked: all stars present) — reported as INFO, not as a failure.
-      const benign = msgs.filter((m) => /ERR_ABORTED\] \S*\/stars\.bin/.test(m) && h.stars >= 25000);
+      // ERR_ABORTED on three's fetch-based loads (FileLoader: stars.bin, .ktx2 and the Basis
+      // transcoder) is reported intermittently by the headless browser although the data
+      // arrives (checked: all stars present; KTX2 by 'colour-map upgrades are KTX2' and a
+      // direct request trace) — reported as INFO, not as a failure.
+      const benign = msgs.filter((m) => (/ERR_ABORTED\] \S*\/stars\.bin/.test(m) && h.stars >= 25000)
+        || /ERR_ABORTED\] \S*(\.ktx2|\/basis_transcoder\.(js|wasm)) \(fetch/.test(m));
       env.push(...benign);
       const net = msgs.filter((m) => !env.includes(m) && /^\[(requestfailed|http)/.test(m));
       const real = msgs.filter((m) => !env.includes(m) && !net.includes(m));
@@ -1453,12 +1456,17 @@ for (const q of ['low', 'medium', 'high']) {
         const s = await ctx.shot(id);
         c.image = s.path;
         imageSanity(c, s.img);
-        const req = ctx.log.requests.map((r) => r.url).filter((u) => /earth_\w+_4096\.jpg/.test(u)).map((u) => u.match(/earth_(\w+)_4096/)?.[1]);
-        const req8 = ctx.log.requests.map((r) => r.url).filter((u) => /earth_\w+_8192\.jpg/.test(u)).map((u) => u.match(/earth_(\w+)_8192/)?.[1]).sort();
+        // colour maps upgrade from .ktx2 (falling back to .jpg), the relief from .jpg
+        const req = ctx.log.requests.map((r) => r.url).filter((u) => /earth_\w+_4096\.(jpg|ktx2)/.test(u)).map((u) => u.match(/earth_(\w+)_4096/)?.[1]);
+        const req8 = ctx.log.requests.map((r) => r.url).filter((u) => /earth_\w+_8192\.(jpg|ktx2)/.test(u)).map((u) => u.match(/earth_(\w+)_8192/)?.[1]).sort();
+        const ktx = ctx.log.requests.map((r) => r.url).filter((u) => /\.ktx2$/.test(u)).map((u) => u.match(/earth_(\w+)_\d+\.ktx2/)?.[1]).filter(Boolean);
         const reqNorm = req.map((k) => ({ day: 'day', relief: 'relief', clouds: 'clouds', lights: 'lights' }[k] || k)).sort();
         c.check('4K requests as specified', JSON.stringify(reqNorm) === JSON.stringify([...expect].sort()), reqNorm.join(',') || 'none', expect.join(',') || 'none');
         c.check('8K requests as specified', JSON.stringify(req8) === JSON.stringify([...expect8].sort()), req8.join(',') || 'none', expect8.join(',') || 'none');
         c.check('materials use the expected map size', Object.entries(tex).every(([k, w]) => w === want(k)), JSON.stringify(tex), `${expect8.length ? `8192 for ${expect8.join(',')}, ` : ''}4096 for ${expect.filter((k) => !expect8.includes(k)).join(',') || 'none'}, else 2048`);
+        const colour = expect.filter((k) => k !== 'relief');
+        const compressed = await ctx.eval(() => { const m = window.__rqh.byName('EarthSurface').material.uniforms; return { day: !!m.dayMap.value.isCompressedTexture, clouds: !!m.cloudMap.value.isCompressedTexture, lights: !!m.nightMap.value.isCompressedTexture }; });
+        c.check('colour-map upgrades are KTX2 (GPU-compressed)', colour.every((k) => compressed[k] && ktx.includes(k)), JSON.stringify(compressed), colour.length ? `${colour.join(',')} compressed` : 'none expected');
         await ctx.health(c);
       },
     });

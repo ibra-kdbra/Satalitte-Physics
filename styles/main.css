@@ -1053,6 +1053,7 @@ input.num:disabled { opacity: 0.4; }
   user-select: none;
 }
 .perf-overlay__row { display: contents; }
+.perf-overlay__head { grid-column: 1 / -1; max-width: 44ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
 .perf-overlay__val { min-width: 6ch; color: var(--text-2); text-align: right; }
 @media (max-width: 819px) {
   .perf-overlay { right: var(--gutter); }

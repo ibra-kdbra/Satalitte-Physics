@@ -6,6 +6,8 @@ Sources (download into <source-dir>; see docs/CREDITS.md):
   blackmarble_2016_3km.jpg   NASA Black Marble 2016, 13500x6750
   ssc_clouds_8k.jpg          Solar System Scope 8K clouds (CC BY 4.0)
   ssc_specular_8k.tif        Solar System Scope 8K specular / water mask (CC BY 4.0)
+  gebco_elev_21600.png       NASA Visible Earth topography (GEBCO 2008), 21600x10800 land elevation
+                             eoimages.gsfc.nasa.gov/images/imagerecords/73000/73934/gebco_08_rev_elev_21600x10800.png
   moon_lroc_8k.tif           NASA SVS CGI Moon Kit, LRO LROC colour 8192x4096
   moon_ldem_16_uint.tif      NASA SVS CGI Moon Kit, LOLA elevation 16 px/deg (uint16 half-metres + 20000)
   milkyway_2020_8k.exr       NASA SVS Deep Star Maps 2020, Milky Way (celestial frame)
@@ -14,13 +16,15 @@ Outputs (assets/textures/), matching the conventions of build-textures.py:
   earth_day_{8192,4096,2048}.jpg     sRGB albedo, oceans toned to orbital-photo darkness
   earth_lights_{8192,4096,2048}.jpg  sRGB grey city lights (ground floor removed)
   earth_clouds_{4096,2048}.jpg       data grey cloud cover
+  earth_relief_{4096,2048}.jpg       data: R land elevation (GEBCO), G water mask (same as the day map), 4:4:4
   moon_{4096,2048,1024}.jpg          sRGB grey albedo (LROC)
-  moon_normal_{2048,1024}.jpg        data: tangent-space normals from LOLA elevation (x east, y north, 3x)
+  moon_normal_{4096,2048,1024}.jpg   data: tangent-space normals from LOLA elevation (x east, y north, 3x)
   milkyway_2048.jpg                  sRGB grey Milky Way, same projection as milkyway_1024.jpg
 
 Every new map is checked against the existing map of the same body by
 correlation, to catch a flipped or shifted projection before it ships.
-Usage: python3 scripts/build-hires-textures.py <source-dir>
+Usage: python3 scripts/build-hires-textures.py <source-dir> [earth relief moon milkyway]
+(no step names: all steps)
 Needs numpy, Pillow, tifffile and OpenEXR.
 """
 import os
@@ -54,10 +58,12 @@ def smoothstep(e0, e1, x):
     return t * t * (3 - 2 * t)
 
 
-def check_alignment(new, ref_name, label, min_corr=0.6):
+def check_alignment(new, ref_name, label, min_corr=0.6, channel=None):
     """Correlate a new map with the shipped map at 512x256, also trying flips and
     longitude shifts; refuse to continue unless the unmodified orientation wins."""
-    ref = np.asarray(Image.open(os.path.join(OUT, ref_name)).convert('L').resize((512, 256), Image.LANCZOS), np.float32)
+    ref = Image.open(os.path.join(OUT, ref_name))
+    ref = ref.convert('RGB').getchannel(channel) if channel else ref.convert('L')
+    ref = np.asarray(ref.resize((512, 256), Image.LANCZOS), np.float32)
     a = np.asarray(new.convert('L').resize((512, 256), Image.LANCZOS), np.float32)
     def corr(x):
         return float(np.corrcoef(x.ravel(), ref.ravel())[0, 1])
@@ -98,6 +104,26 @@ def build_earth(src):
     # 4K at most: the 8K cloud map costs ~9 MB, and close-range cloud detail
     # comes from the procedural detail layer in the shader.
     tiers(clouds, 'earth_clouds', sizes=(4096, 2048), q=88)
+
+
+def water_mask(src, size):
+    """Water fraction 0..1 from the Solar System Scope specular map (white = water)."""
+    spec = tifffile.imread(os.path.join(src, 'ssc_specular_8k.tif'))[..., 0]
+    img = Image.fromarray(spec).resize(size, Image.LANCZOS) if spec.shape[::-1] != size else Image.fromarray(spec)
+    return smoothstep(60, 190, np.asarray(img, np.float32))
+
+
+def build_relief(src):
+    elev = Image.open(os.path.join(src, 'gebco_elev_21600.png')).convert('L')
+    for w in (4096, 2048):
+        e = elev.resize((w, w // 2), Image.LANCZOS)
+        if w == 4096:
+            check_alignment(e, 'earth_relief_4096.jpg', 'earth relief', min_corr=0.8, channel='R')
+        water = water_mask(src, (w, w // 2))
+        rgb = np.dstack([np.asarray(e, np.uint8), (water * 255 + 0.5).astype(np.uint8), np.zeros((w // 2, w), np.uint8)])
+        path = os.path.join(OUT, f'earth_relief_{w}.jpg')
+        Image.fromarray(rgb, 'RGB').save(path, quality=92, optimize=True, subsampling=0)  # 4:4:4: data map
+        print(f'{os.path.basename(path):28s} {w}x{w // 2} RGB {os.path.getsize(path) / 1024:8.0f} KB')
 
 
 def check_moon_landmarks(albedo, height_m):
@@ -144,7 +170,7 @@ def build_moon(src):
     n /= np.linalg.norm(n, axis=2, keepdims=True)
     rgb = ((n * 0.5 + 0.5) * 255 + 0.5).astype(np.uint8)
     img = Image.fromarray(rgb, 'RGB')
-    for w in (2048, 1024):
+    for w in (4096, 2048, 1024):
         out = img.resize((w, w // 2), Image.LANCZOS)
         path = os.path.join(OUT, f'moon_normal_{w}.jpg')
         out.save(path, quality=90, optimize=True, subsampling=0)  # 4:4:4: data map
@@ -168,6 +194,6 @@ if __name__ == '__main__':
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     src = sys.argv[1]
-    build_earth(src)
-    build_moon(src)
-    build_milky_way(src)
+    steps = {'earth': build_earth, 'relief': build_relief, 'moon': build_moon, 'milkyway': build_milky_way}
+    for name in sys.argv[2:] or steps:
+        steps[name](src)

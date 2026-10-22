@@ -36,6 +36,9 @@ export const SCATTER_STEPS = {
 export const FINITE_GLSL = /* glsl */`
 vec4 finiteHDR(vec4 c) {
   bvec4 bad = equal(floatBitsToUint(c) & uvec4(0x7f800000u), uvec4(0x7f800000u));
+#ifdef NAN_PROBE
+  if (any(bad)) return vec4(1.0, 0.0, 1.0, 1.0); // diagnostics: show where it happens
+#endif
   return clamp(mix(c, vec4(0.0), bad), 0.0, 6.0e4);
 }
 `;
@@ -105,8 +108,10 @@ vec3 aScatterN(vec3 ro, vec3 rd, float t0, float t1, vec3 L, int steps, out vec3
   for (int i = 1; i <= ATMO_STEPS; i++) {
     if (i > steps) break;
     float tNext;
-    if (i <= nA) { float u = 1.0 - float(i) / float(nA); tNext = tc - (tc - t0) * u * u; }
-    else { float u = float(i - nA) / float(nB); tNext = tc + (t1 - tc) * u * u; }
+    // max(·, 1): the branch not taken may still be evaluated (GPUs flatten
+    // branches), and a 0/0 there must not produce a NaN.
+    if (i <= nA) { float u = 1.0 - float(i) / float(max(nA, 1)); tNext = tc - (tc - t0) * u * u; }
+    else { float u = float(i - nA) / float(max(nB, 1)); tNext = tc + (t1 - tc) * u * u; }
     float dt = tNext - tPrev;
     vec3 p = ro + rd * (tPrev + 0.5 * dt);
     float r = length(p);

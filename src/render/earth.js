@@ -521,7 +521,7 @@ export function createEarth(textures, { quality = 'high' } = {}) {
       cloudShift: { value: 0 },
       cloudsOn: { value: 1 },
       cityLights: { value: 1 },
-      bumpScale: { value: 2.2 },
+      bumpScale: { value: 4.4 }, // GEBCO elevation map (scripts/build-hires-textures.py)
       debugView: { value: 0 },
     },
     defines: { ATMO_STEPS: steps.surface, ...apDefines, ...(apDefines.AP_VERTEX === '' ? { SHADOW_VERTEX: '' } : {}) },

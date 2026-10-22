@@ -115,6 +115,7 @@ const real = {
   buf: { pos: [0, 0, 0], vel: [0, 0, 0] }, stateMs: NaN, orbitMs: NaN, // reused SGP4 state, its time, the drawn orbit's time
 };
 let adaptive = null;          // adaptive resolution controller (src/render/adaptive.js)
+let requestTexture = () => {}; // textures.request: on-demand tiers (src/render/textures.js)
 const coloredGroups = new Set();
 let moonTrail, moonOrbitLine, moonAnchor, earthAnchor, previewLabel;
 const markerLabels = {};
@@ -145,6 +146,7 @@ async function boot() {
   hud.setLoading?.(0.92, 'Building the Earth–Moon system');
   // Sharper texture tiers arrive in the background; redraw even while paused.
   for (const key of Object.keys(textures)) textures.watch(key, () => wake());
+  requestTexture = textures.request;
 
   const { scene, camera } = view;
   earth = createEarth(textures, { quality: settings.graphics.quality });
@@ -219,7 +221,7 @@ async function boot() {
   hud.setTargetAltitude?.(targetAltKm);
   if (params.has('perf') && params.get('perf') !== '0') {
     const { createPerfMonitor } = await import('./ui/perf.js');
-    perf = createPerfMonitor(document.body);
+    perf = createPerfMonitor(document.body, { gl: view.renderer.getContext(), gpu: view.gpu, quality: settings.graphics.quality });
     view.renderer.info.autoReset = false; // count every pass of a frame (bloom included)
   }
   // A few classic orbits so the first view is alive.
@@ -244,7 +246,7 @@ async function boot() {
   hud.setLoading?.(1, 'Ready');
   hud.hideLoading?.();
   hud.toast?.('Right-drag in space (Shift+drag, or long-press on touch) to launch your own satellite.', 'info');
-  rafId = requestAnimationFrame((now) => { performance.mark('satalitte:first-frame'); frame(now); setTimeout(startCatalog, 0); });
+  rafId = requestAnimationFrame((now) => { performance.mark('satalitte:first-frame'); frame(now); setTimeout(startCatalog, 0); setTimeout(registerServiceWorker, 3000); });
 }
 
 /**
@@ -272,6 +274,23 @@ function onGraphicsIssue(kind) {
     url.searchParams.delete('quality');
     setTimeout(() => location.replace(url), 1500);
   }
+}
+
+/**
+ * Offline cache and fast repeat visits (sw.js). Not on localhost, so tests and
+ * benchmarks always measure real downloads; ?sw=0 opts out.
+ */
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator) || params.get('sw') === '0') return;
+  if (/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) return;
+  navigator.serviceWorker.register('./sw.js')
+    .then(() => navigator.serviceWorker.ready)
+    .then((reg) => {
+      const urls = [location.href, ...performance.getEntriesByType('resource').map((e) => e.name)]
+        .filter((u) => u.startsWith(location.origin));
+      reg.active?.postMessage({ type: 'warm', urls });
+    })
+    .catch((err) => console.warn('Service worker:', err));
 }
 
 /** Real satellites: loaded after the first frame, so they never delay it. */
@@ -605,6 +624,8 @@ function frame(now) {
   earthArgs.settings = settings.graphics;
   earth.update(earthArgs);
   moon.update(moonArgs);
+  // within ~20,000 km of the Moon: fetch its 4K relief (once; 'high' only)
+  if (view.camera.position.distanceToSquared(moonRender) < 400) requestTexture('moonNormal');
   moonAnchor.position.copy(moonRender).add(tmp.set(0, R_MOON * UNIT * 1.6, 0));
   pushTrail(moonTrail, moonRender, null);
   if (pf) pt = pf.lap(2, pt);
@@ -652,7 +673,9 @@ function frame(now) {
   if (draw) {
     if (pf) view.renderer.info.reset();
     const r0 = pf ? pt : performance.now();
+    if (pf) pf.gpuBegin();
     view.renderScene();
+    if (pf) pf.gpuEnd();
     const r1 = performance.now();
     renderMs = r1 - r0;
     lastDrawAt = now;

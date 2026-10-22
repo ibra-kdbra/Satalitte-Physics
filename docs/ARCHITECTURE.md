@@ -52,23 +52,37 @@ Do not import other addons (they are not vendored).
 ## Textures (`assets/textures/`) and sky data
 
 Rebuilt from the original downloads by `scripts/build-hires-textures.py` (Earth
-day/lights/clouds, Moon, Milky Way 2K) and `scripts/build-textures.py` (relief,
-Milky Way 1K, stars); sources and licences in `docs/CREDITS.md`. The first
-frame uses 2K Earth maps; upgrades are downloaded afterwards and uploaded in
-idle time, one tier at a time (`textures.js`): 'medium' → 4K day + clouds;
-'high' → 4K Earth maps and 4K Moon, then 8K day + lights on desktop-class
-GPUs (16384² textures, ≥ 8 GB memory, fine pointer). 'low' and software GL
-never upgrade. A shader the GPU rejects is reported in a toast; a lost WebGL
-context (out of video memory) steps the quality down and reloads.
+day/lights/clouds/relief, Moon albedo and normals, Milky Way 2K) and
+`scripts/build-textures.py` (Milky Way 1K, stars); the KTX2 copies by
+`npm run textures:ktx2` (`scripts/build-ktx2.mjs`). Sources and licences in
+`docs/CREDITS.md`.
+
+Loading (`textures.js`): the first frame uses the JPEG start tiers. Upgrades
+are downloaded afterwards and uploaded in idle time, one texture at a time:
+'medium' → 4K day + clouds, 2K Moon relief; 'high' → 4K Earth maps and 4K Moon,
+then 8K day + lights on desktop-class GPUs (16384² textures, ≥ 8 GB memory,
+fine pointer). 'low' and software GL never upgrade. The colour maps' upgrade
+tiers (`KTX2_KEYS`) load as KTX2 (Basis ETC1S): about the JPEG's size, but
+transcoded in workers to the GPU's compressed format (BC7 / ETC2 / ASTC), so
+4–8× less video memory, precomputed mipmaps and no main-thread decode; the
+JPEG of the same tier is the fallback. The KTX2 loader and its transcoder
+(~0.6 MB) are fetched only when the first upgrade starts. The 4K Moon relief is
+an on-demand tier (`ON_DEMAND`): fetched once the camera comes within ~20,000 km
+of the Moon ('high', fine pointer).
+
+Robustness: a shader the GPU rejects is reported in a toast; a lost WebGL
+context (out of video memory) steps the quality down and reloads; every Earth,
+cloud and atmosphere pixel and the bloom input pass `finiteHDR()` (NaN/Inf → 0),
+so a single bad pixel cannot be blurred over the frame.
 
 | file | content | notes |
 |---|---|---|
-| earth_day_{8192,4096,2048}.jpg | RGB | day albedo (sRGB), Blue Marble NG July 2004, deep ocean flattened |
-| earth_relief_{4096,2048}.jpg | RGB data | R = elevation (bump), G = water mask (NoColorSpace) |
-| earth_clouds_{4096,2048}.jpg | L | cloud coverage, used as alpha |
-| earth_lights_{8192,4096,2048}.jpg | L | Black Marble 2016 city light intensity (sRGB) |
-| moon_{4096,2048,1024}.jpg | L | LRO LROC albedo (high 2048 → 4096, medium 2048, low 1024) |
-| moon_normal_{2048,1024}.jpg | RGB data | LOLA tangent-space normals, x = east, y = north, 3× relief (NoColorSpace); 1024 first, 2048 upgrade on medium/high |
+| earth_day_{8192,4096,2048}.jpg, earth_day_{8192,4096}.ktx2 | RGB | day albedo (sRGB), Blue Marble NG July 2004, deep ocean flattened |
+| earth_relief_{4096,2048}.jpg | RGB data | R = land elevation (GEBCO, bump), G = water mask (same mask as the day map), NoColorSpace, 4:4:4 |
+| earth_clouds_{4096,2048}.jpg, earth_clouds_4096.ktx2 | L | cloud coverage, used as alpha |
+| earth_lights_{8192,4096,2048}.jpg, earth_lights_{8192,4096}.ktx2 | L | Black Marble 2016 city light intensity (sRGB) |
+| moon_{4096,2048,1024}.jpg, moon_4096.ktx2 | L | LRO LROC albedo (high 2048 → 4096, medium 2048, low 1024) |
+| moon_normal_{4096,2048,1024}.jpg | RGB data | LOLA tangent-space normals, x = east, y = north, 3× relief (NoColorSpace); 1024 first, 2048 upgrade on medium/high, 4096 on demand |
 | milkyway_{2048,1024}.jpg | L | Milky Way in RA/Dec (u = 0.5 − RA/360°); 2048 on medium/high |
 | `assets/stars.bin` | binary | 25,723 Hipparcos stars ≤ mag 7.5: 'STAR', uint32 n, then per star int16 x,y,z (world frame ×32767), uint8 (mag+2)×25, uint8 r,g,b |
 

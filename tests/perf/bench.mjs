@@ -364,16 +364,17 @@ async function gpuProbe(page) {
 // ------------------------------------------------------------------ bytes per quality (hardware path, from the texture manifest in src/render/textures.js)
 
 async function bytesPerQuality() {
-  const { manifest } = await import('../../src/render/textures.js');
+  const { manifest, KTX2_KEYS } = await import('../../src/render/textures.js');
   const size = async (p) => { try { return (await stat(join(ROOT, p))).size; } catch { return 0; } };
   const tex = (pattern, res) => size(`assets/textures/${pattern.replace('{res}', res)}`);
   const out = {};
   for (const q of ['low', 'medium', 'high']) {
     // desktop GPU: the 8K tier is allowed (fine pointer, max texture size ≥ 16384, ≥ 8 GB)
     let first = await size('assets/stars.bin'), later = 0;
-    for (const [pattern, , , , start, tiers] of Object.values(manifest(q, true))) {
+    for (const [key, [pattern, , , , start, tiers]] of Object.entries(manifest(q, true))) {
       first += await tex(pattern, start);
-      for (const r of tiers) later += await tex(pattern, r);
+      const up = KTX2_KEYS.has(key) ? pattern.replace(/\.jpg$/, '.ktx2') : pattern; // what the upgrade downloads
+      for (const r of tiers) later += await tex(up, r);
     }
     out[q] = { textures: first, upgrade: later };
   }

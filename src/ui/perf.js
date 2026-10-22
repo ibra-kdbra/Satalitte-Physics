@@ -5,6 +5,8 @@
 //
 // main.js brackets each stage of a frame:
 //   let t = perf.begin(now);  …physics…  t = perf.lap(0, t);  …  perf.end(info)
+// and wraps the scene draw in perf.gpuBegin() / perf.gpuEnd() for the GPU's own
+// time (EXT_disjoint_timer_query_webgl2, where the browser exposes it).
 // and the samples are kept in ring buffers that `window.__satalitte.perf`
 // exposes to the benchmark (tests/perf/bench.mjs).
 
@@ -12,12 +14,17 @@ export const STAGES = ['physics', 'catalogue', 'scene', 'render', 'labels', 'hud
 const N = 600;            // samples kept per series (~10 s at 60 fps)
 const REFRESH_MS = 500;   // overlay refresh period
 
-export function createPerfMonitor(root = document.body) {
+/**
+ * @param {HTMLElement} root
+ * @param {{ gl?: WebGL2RenderingContext, gpu?: string, quality?: string }} [opts]
+ */
+export function createPerfMonitor(root = document.body, { gl = null, gpu = '', quality = '' } = {}) {
   const S = STAGES.length;
   const series = {
     interval: new Float32Array(N), // ms between animation frames
     frame: new Float32Array(N),    // ms of JS work in frame()
     rendered: new Uint8Array(N),   // 1 when the GL scene was drawn
+    gpu: new Float32Array(N).fill(NaN), // ms the GPU spent on the scene draw (when measurable)
   };
   for (const s of STAGES) series[s] = new Float32Array(N);
   const acc = new Float64Array(S);
@@ -44,9 +51,15 @@ export function createPerfMonitor(root = document.body) {
     el.append(r);
     rows[key] = v;
   };
+  const head = document.createElement('div');
+  head.className = 'perf-overlay__head';
+  head.textContent = [quality, gpu].filter(Boolean).join(' · ');
+  head.title = head.textContent;
+  if (head.textContent) el.append(head);
   row('fps', 'fps');
   row('frame', 'frame ms');
   row('js', 'js ms');
+  row('gpu', 'gpu ms');
   for (const s of STAGES) row(s, `· ${s}`);
   row('calls', 'draw calls');
   row('tris', 'triangles');
@@ -56,6 +69,33 @@ export function createPerfMonitor(root = document.body) {
   root.append(el);
 
   let lastRefresh = 0;
+
+  // ---------------------------------------------------------------- GPU timer
+  // One query per drawn frame, read back a few frames later (never blocks).
+  const tq = gl && gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  const pending = [];
+  let active = null;
+  let gpuMs = NaN;
+  function gpuBegin() {
+    if (!tq || active || pending.length > 4) return;
+    active = gl.createQuery();
+    gl.beginQuery(tq.TIME_ELAPSED_EXT, active);
+  }
+  function gpuEnd() {
+    if (!active) return;
+    gl.endQuery(tq.TIME_ELAPSED_EXT);
+    pending.push(active);
+    active = null;
+  }
+  function pollGpu() {
+    if (!tq) return;
+    const disjoint = gl.getParameter(tq.GPU_DISJOINT_EXT);
+    while (pending.length && gl.getQueryParameter(pending[0], gl.QUERY_RESULT_AVAILABLE)) {
+      const q = pending.shift();
+      if (!disjoint) gpuMs = gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6;
+      gl.deleteQuery(q);
+    }
+  }
 
   function begin(now) {
     if (lastNow === lastNow) series.interval[count % N] = now - lastNow;
@@ -82,6 +122,8 @@ export function createPerfMonitor(root = document.body) {
     series.frame[k] = performance.now() - frameStart;
     for (let i = 0; i < S; i++) series[STAGES[i]][k] = acc[i];
     series.rendered[k] = didRender;
+    pollGpu();
+    series.gpu[k] = didRender ? gpuMs : NaN;
     if (rendererInfo && didRender) {
       const r = rendererInfo.render;
       info = {
@@ -114,6 +156,7 @@ export function createPerfMonitor(root = document.body) {
     rows.fps.textContent = f1(1000 / interval);
     rows.frame.textContent = f1(interval);
     rows.js.textContent = f2(mean(series.frame, n));
+    rows.gpu.textContent = tq ? f2(mean(series.gpu, n)) : 'n/a (no GPU timer)';
     for (const s of STAGES) rows[s].textContent = f2(mean(series[s], n));
     rows.calls.textContent = String(info.calls);
     rows.tris.textContent = info.triangles.toLocaleString('en-US');
@@ -139,5 +182,5 @@ export function createPerfMonitor(root = document.body) {
 
   function reset() { count = 0; lastNow = NaN; }
 
-  return { begin, lap, end, markRendered, samples, reset, extra, stages: STAGES, element: el, get count() { return count; } };
+  return { begin, lap, end, markRendered, gpuBegin, gpuEnd, samples, reset, extra, stages: STAGES, element: el, get count() { return count; } };
 }

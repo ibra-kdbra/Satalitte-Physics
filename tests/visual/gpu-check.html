@@ -38,6 +38,9 @@ const VARIANTS = [
   ['9 · sunlight at the ground', 'dbg=3'],
   ['10 · constant red', 'dbg=4'],
   ['11 · NaN check (magenta = NaN)', 'dbg=5'],
+  ['12 · NaN probe: surface, clouds, atmosphere', 'nanprobe=1&bloom=0'],
+  ['13 · NaN probe, close to the limb', 'nanprobe=1&bloom=0&cam=0,1.2,7.4'],
+  ['14 · NaN probe, low orbit', 'nanprobe=1&bloom=0&cam=0.6,0.25,6.95&target=0,0,6'],
 ];
 const grid = document.getElementById('grid');
 const log = document.getElementById('log');

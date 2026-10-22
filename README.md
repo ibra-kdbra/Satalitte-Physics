@@ -52,8 +52,13 @@ Newton's cannon, escape, a lunar transfer and a lunar orbiter.
 | `?empty` | Start with only the Earth and the Moon |
 | `?warp=3600` | Initial time warp (1, 10, 60, 300, 1800, 3600, 21600, 86400) |
 | `?quality=low` | Force graphics quality (low / medium / high) |
-| `?perf=1` | Performance overlay: frame time, CPU time per stage, draw calls, triangles, GPU memory |
+| `?perf=1` | Performance overlay: GPU name, frame time, CPU time per stage, GPU time per frame (where the browser exposes GPU timers), draw calls, triangles, GPU memory |
 | `?adaptive=0` / `?adaptive=1` | Adaptive resolution off / on (default: on with a GPU, off on software rendering) |
+| `?sw=0` | Do not register the offline cache (service worker) |
+
+Graphics trouble on a particular GPU? `tests/visual/gpu-check.html` draws the
+Earth in 14 variants (features off, debug views, NaN probes) side by side; a
+screenshot of it pins the failing part down.
 
 ## Project layout
 
@@ -67,7 +72,8 @@ src/physics/          simulation, orbits, ephemeris, atmosphere, presets (pure J
 src/render/           three.js scene: Earth shaders, Moon, sky, spacecraft, trails
 src/ui/               HUD, instruments (navball, ground track, chart), settings
 vendor/               three.js r185 + addons, lil-gui 0.21 (pinned, served locally)
-assets/textures/      Earth / Moon / star textures
+assets/textures/      Earth / Moon / sky textures (JPEG start tiers, KTX2 for the large colour maps)
+sw.js                 service worker: offline start, cached textures on repeat visits
 tests/                physics unit tests and headless smoke tools
 legacy/               the 2021 version and the ORBITAL-OS prototype
 docs/ARCHITECTURE.md  module contracts and coordinate conventions
@@ -83,6 +89,9 @@ npm test                         # physics regression tests (node --test)
 npm install && npm run vendor    # only when upgrading three.js / lil-gui
 node tests/smoke/shot.mjs index.html shot.png 8000   # headless render check (needs Playwright)
 npm run bench                    # performance benchmark: CPU per stage, draw calls, bytes, start-up (needs Playwright)
+npm run validate:render          # rendering checks with a contact sheet (needs Playwright)
+python3 scripts/build-hires-textures.py <sources>   # rebuild the textures from the NASA originals (see the script)
+npm run textures:ktx2            # rebuild the KTX2 copies after changing a JPEG
 ```
 
 ### Deployment
@@ -101,8 +110,10 @@ data served with `?satdata=tests/fixtures/satellites/`.
 
 ## Credits & references
 
-Textures: NASA Blue Marble / Visible Earth derived maps (via the three.js
-examples, MIT) and the original project's images. Physics references are
+Textures: NASA Blue Marble Next Generation, Black Marble 2016, GEBCO
+topography (Visible Earth), LRO LROC and LOLA (NASA SVS CGI Moon Kit), Deep Star
+Maps 2020, Solar System Scope clouds (CC BY 4.0) and Hipparcos stars; full list
+and licences in [`docs/CREDITS.md`](docs/CREDITS.md). Physics references are
 listed in [`Links for project.txt`](Links%20for%20project.txt) and in the
 in-app help.
 
