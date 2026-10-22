@@ -17,6 +17,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { initSpacecraftEnvironment } from './satellite.js';
+import { FINITE_GLSL } from './atmosphere.js';
 
 const QUALITY = {
   high: { maxPixelRatio: 2, bloomScale: 0.5, bloom: true },
@@ -102,6 +103,12 @@ export function createRenderer(container, { quality = 'high', software = 'auto' 
       Math.max(32, Math.round(w * QUALITY[q].bloomScale * 2)),
       Math.max(32, Math.round(h * QUALITY[q].bloomScale * 2)),
     ); // UnrealBloomPass already halves internally
+    // Bloom input: drop non-finite pixels so a single NaN/Inf from any shader
+    // cannot be blurred across the whole frame.
+    const hp = bloomPass.materialHighPassFilter;
+    hp.fragmentShader = FINITE_GLSL + hp.fragmentShader.replace(
+      'vec4 texel = texture2D( tDiffuse, vUv );', 'vec4 texel = finiteHDR( texture2D( tDiffuse, vUv ) );');
+    hp.needsUpdate = true;
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
     composer.setPixelRatio(pixelRatio());

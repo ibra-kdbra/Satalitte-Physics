@@ -327,6 +327,7 @@ void main() {
            : (bad ? vec3(1.0, 0.0, 1.0) : vec3(0.5));
     gl_FragColor = vec4(d, 1.0);
   }
+  gl_FragColor = finiteHDR(gl_FragColor);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
@@ -393,7 +394,7 @@ void main() {
 
   col = aerial(col, camRel, -V, dist);
   a *= mix(0.65, 1.0, smoothstep(-0.15, 0.0, mu)); // let city lights glow through at night
-  gl_FragColor = vec4(col, a * opacity);
+  gl_FragColor = finiteHDR(vec4(col, a * opacity));
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
@@ -432,7 +433,7 @@ void main() {
   #include <logdepthbuf_fragment>
   vec3 Tv;
   vec3 ins = aScatter(camRel, rd, t0, t1, sunDir, Tv) * (sunE * atmoGain);
-  gl_FragColor = vec4(ins, 1.0 - dot(Tv, vec3(0.3333)));
+  gl_FragColor = finiteHDR(vec4(ins, 1.0 - dot(Tv, vec3(0.3333))));
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;

@@ -27,7 +27,21 @@ export const SCATTER_STEPS = {
   software: { sky: 6, surface: 8, clouds: 6 },
 };
 
+/**
+ * GLSL: replace NaN/Inf with 0 and clamp to the half-float range. Tested on the
+ * exponent bits, which a driver's fast-math cannot optimise away (isnan() can
+ * be). NVIDIA's Linux driver produced a few non-finite atmosphere pixels; the
+ * bloom blur then spread them over the whole frame as black.
+ */
+export const FINITE_GLSL = /* glsl */`
+vec4 finiteHDR(vec4 c) {
+  bvec4 bad = equal(floatBitsToUint(c) & uvec4(0x7f800000u), uvec4(0x7f800000u));
+  return clamp(mix(c, vec4(0.0), bad), 0.0, 6.0e4);
+}
+`;
+
 export const ATMOSPHERE_GLSL = /* glsl */`
+${FINITE_GLSL}
 #ifndef ATMO_STEPS
 #define ATMO_STEPS 8
 #endif
